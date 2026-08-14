@@ -321,7 +321,40 @@ The argument for deciding *before* the run:
 It changes what the run must produce: under the second spine the traces carry the argument and named
 cases matter more than the score. **His call — do not resolve it for him.**
 
-## Lesson 06 — planned
+## Lesson 06 — shipped
+
+One concept: **the loop is trivial; the boundaries are the experiment.** Analogy first (a migration
+script — the body is easy, what breaks it is the transaction wrapper, the halfway failure, and
+whether you verified before or after).
+
+`assets/agent_loop.py` is dry-runnable with a scripted fake model — **no API key, no budget** — and
+walks all eight scenarios covering six exit paths. Keep it as the regression test.
+
+Two exits are decisions rather than mechanics, and both follow from things already established:
+
+- **`max_steps` → COMMIT, not rollback.** Mode A's partial work is already committed; discarding
+  Mode B's scores the arms under different rules. (Scoring uncommitted state on the same connection
+  then rolling back is equivalent — pick one, state it, apply to both.)
+- **`end_turn` with no tool call → reprompt once, then stop.** A spinning loop burns the whole
+  budget at ~2 s per empty turn. Never appears in testing; appears eventually across 40 tasks.
+
+Reference 07 is the implementation checklist, including a pre-flight list.
+
+**Contestable claim planted, and I think genuinely unresolvable:** the last line of the Mode B
+prompt — *"prefer trying an approach and undoing it over reasoning about which approach is
+correct."* Without it he may measure an agent that has the tools and ignores them; with it he has
+arguably prompted the result into existence. Neither is neutral. Flagged as a stated design
+decision for the write-up rather than something to bury in a prompt string.
+
+## Housekeeping
+
+Added `.gitignore` (`__pycache__/`, `*.py[cod]`, `.venv/`, caches, `.DS_Store`) — Yash asked
+mid-turn after the dry run left bytecode. **`runs/` deliberately not ignored**: the traces are the
+experiment's evidence and the named recovery cases are quoted from them. Note it landed on
+`claude/teach` rather than `main`, which breaks the branch convention slightly — it'll carry over on
+merge; offered to move it.
+
+## Lesson 07 — probably not needed
 
 The agent loop: tool schemas that make branching legible in the trace, and logging that can
 answer "which task did checkpointing rescue?" Natural follow-on — lesson 03 established that

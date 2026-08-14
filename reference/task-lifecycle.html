@@ -1,0 +1,113 @@
+<title>Reference — Task Lifecycle</title>
+<link rel="stylesheet" href="../assets/lesson.css">
+
+<p class="eyebrow">dbagent · reference 07</p>
+<h1>Task Lifecycle</h1>
+<p class="standfirst">The implementation checklist for one task. The loop is trivial; everything
+that decides the experiment is at a boundary.</p>
+
+<h2>1 · Ordering</h2>
+
+<div class="table-wrap">
+<table>
+  <thead><tr><th>#</th><th>Step</th><th>Forced by</th></tr></thead>
+  <tbody>
+    <tr><td>1</td><td><code>DROP</code>/<code>CREATE DATABASE</code>; <code>CREATE TABLE</code> (all <code>TEXT</code>, backticked); <code>INSERT</code> rows</td>
+        <td>DDL implicitly commits — must precede <code>START TRANSACTION</code> (<a href="mysql-transaction-boundaries.html">Ref 01</a>)</td></tr>
+    <tr><td>2</td><td><em>Mode B:</em> <code>START TRANSACTION</code>; <code>SAVEPOINT sp_0</code></td>
+        <td><code>sp_0</code> is the restore floor — “reset to start” without a bare <code>ROLLBACK</code> (<a href="tool-boundary.html">Ref 05</a>)</td></tr>
+    <tr><td>3</td><td>the agent loop</td><td>—</td></tr>
+    <tr><td>4</td><td>commit, then score <strong>on the same connection</strong></td>
+        <td>A reconnecting scorer reads pre-branch state (<a href="mysql-transaction-boundaries.html">Ref 01</a>)</td></tr>
+    <tr><td>5</td><td><code>DROP DATABASE</code></td><td>Next task starts clean</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p><em>Mode A</em> has no explicit transaction: autocommit is on and every statement commits as it
+runs. That asymmetry <strong>is</strong> the variable under study.</p>
+
+<h2>2 · Exit paths</h2>
+
+<div class="table-wrap">
+<table>
+  <thead><tr><th>Exit</th><th>Handling</th><th>Scored?</th></tr></thead>
+  <tbody>
+    <tr><td><code>commit_final_answer</code></td><td>Commit, score</td><td>✓</td></tr>
+    <tr><td><code>max_steps</code></td><td><strong>COMMIT, do not roll back</strong></td><td>✓</td></tr>
+    <tr><td><code>stop_reason: max_tokens</code></td><td>Harness artifact — exclude, report separately</td><td>✗</td></tr>
+    <tr><td><code>stop_reason: refusal</code></td><td>Harness artifact — exclude</td><td>✗</td></tr>
+    <tr><td><code>end_turn</code>, no tool call</td><td>Reprompt <strong>once</strong>, then stop</td><td>✗</td></tr>
+    <tr><td>exception</td><td><code>complete: false</code> — never score as a failure</td><td>✗</td></tr>
+  </tbody>
+</table>
+</div>
+
+<div class="callout warn">
+  <span class="label">The two that are decisions, not mechanics</span>
+  <p><strong><code>max_steps</code> → commit.</strong> Mode A's partial work is already committed —
+  that is what Mode A <em>is</em>. Rolling back Mode B's gives partial credit to one arm and zero to
+  the other for identical behaviour. Scoring the uncommitted state on the same connection then
+  rolling back is equivalent; pick one, state it, apply to both arms.</p>
+  <p><strong><code>end_turn</code> → never spin.</strong> A loop that re-requests burns the whole
+  budget at ~2 s and real tokens per empty turn. It never appears in testing and appears eventually
+  across 40 tasks.</p>
+</div>
+
+<p><strong>Report the excluded set alongside the result.</strong> A silent exclusion is the same
+failure as a silent inclusion (<a href="trace-schema.html">Ref 06</a>).</p>
+
+<h2>3 · Request shape</h2>
+
+<pre><code>client.messages.create(
+    model="claude-opus-5",            <span class="cmt"># pin exactly; log it in the header</span>
+    max_tokens=4096,
+    system=system_for(mode),
+    tools=tools_for(mode),
+    tool_choice={"type": "auto", <span class="ok">"disable_parallel_tool_use": True</span>},
+    thinking={"type": "adaptive"},
+    output_config={"effort": "high"},
+    messages=messages,
+)</code></pre>
+
+<p>Hold identical across modes: model id, effort, thinking, <code>max_tokens</code>,
+<code>max_steps</code>, the guard, and <code>disable_parallel_tool_use</code>. <strong>Not</strong>
+<code>temperature</code> — it is no longer accepted (<a href="tool-boundary.html">Ref 05</a>).</p>
+
+<h2>4 · The prompts</h2>
+
+<p>Identical except one paragraph. That paragraph is the confound — state it, don't net it out.</p>
+
+<div class="table-wrap">
+<table>
+  <thead><tr><th>Block</th><th>Modes</th><th>Doing what</th></tr></thead>
+  <tbody>
+    <tr><td>Task framing + <code>execute_sql</code> usage</td><td>A, B</td><td>Baseline</td></tr>
+    <tr><td>Guard contents (“DDL and transaction-control are rejected”)</td><td>A, B</td><td>Lowers the rejection rate; the dispatcher still guarantees it</td></tr>
+    <tr><td>Checkpoint/restore description</td><td>B</td><td><strong>The confound.</strong> Extra tools ⇒ longer prompt ⇒ different action space</td></tr>
+    <tr><td>“Prefer trying and undoing over reasoning about which is correct”</td><td>B</td><td><strong>Contested.</strong> Without it you may measure an agent that ignores its tools; with it you have prompted the behaviour. State whichever you choose.</td></tr>
+  </tbody>
+</table>
+</div>
+
+<h2>5 · Pre-flight</h2>
+
+<ol>
+  <li><code>uv run python assets/milestone0.py</code> → <strong>40/40</strong>. If not, stop.</li>
+  <li><code>uv run python assets/sql_guard.py</code> → 20/20, 0/40 gold labels blocked.</li>
+  <li><code>uv run python assets/agent_loop.py</code> → all six exit paths, no API calls.</li>
+  <li><code>uv run python assets/trace.py</code> → analysis runs end-to-end on synthetic data.</li>
+  <li>Pick <code>max_steps</code>: size it for Mode B (~10 turns for a 3-alternative exploration),
+      use the same number in Mode A, and report turns actually used — that comparison <em>is</em>
+      the policy-change measurement.</li>
+  <li>Confirm <code>check_controls()</code> reports <code>stable</code> per mode after the run.</li>
+</ol>
+
+<div class="footer">
+  <h3>Related</h3>
+  <ul class="next-links">
+    <li><a href="../lessons/0006-the-boundaries-are-the-experiment.html">Lesson 06 — The loop is trivial; the boundaries are the experiment</a></li>
+    <li><a href="../assets/agent_loop.py"><code>assets/agent_loop.py</code></a></li>
+    <li><a href="experiment-design-checklist.html">Ref 02</a> · <a href="tool-boundary.html">Ref 05</a> · <a href="trace-schema.html">Ref 06</a></li>
+  </ul>
+</div>

@@ -1,0 +1,232 @@
+<title>Lesson 06 — The loop is trivial; the boundaries are the experiment</title>
+<link rel="stylesheet" href="../assets/lesson.css">
+
+<p class="eyebrow">dbagent · lesson 06 · ~13 minutes</p>
+<h1>The loop is trivial; the boundaries are the experiment</h1>
+<p class="standfirst">Assembly session. Every decision is already made — this is where they compose,
+and where the last confounds are hiding.</p>
+
+<h2>The idea, in one analogy</h2>
+
+<p>Think about a database migration. The body is trivial SQL — a few <code>ALTER</code>s anyone
+could write. What breaks migrations is never the middle: it's whether you wrapped it in a
+transaction, what happens if it dies halfway, and whether you verified before or after.</p>
+
+<p>An agent loop is the same shape. The loop is five lines and nobody gets it wrong. What decides
+your experiment is <strong>setup ordering, exit paths, and where you score</strong> — all of which
+sit outside the loop.</p>
+
+<pre><code><span class="cmt"># this part is not where the difficulty is</span>
+for _ in range(max_steps):
+    resp = client.messages.create(...)
+    call = [b for b in resp.content if b.type == "tool_use"][0]
+    result, done = dispatch(session, call.name, call.input, ...)
+    if done: break</code></pre>
+
+<h2>Ordering — every line forced by an earlier lesson</h2>
+
+<div class="table-wrap">
+<table>
+  <thead><tr><th>#</th><th>Step</th><th>Why it must be here</th></tr></thead>
+  <tbody>
+    <tr><td>1</td><td><code>DROP</code>/<code>CREATE DATABASE</code>, <code>CREATE TABLE</code>, <code>INSERT</code></td>
+        <td>DDL causes an implicit commit — it <strong>must</strong> precede <code>START TRANSACTION</code> or it destroys the savepoint (Lesson 01)</td></tr>
+    <tr><td>2</td><td>Mode B: <code>START TRANSACTION</code>; <code>SAVEPOINT sp_0</code></td>
+        <td><code>sp_0</code> is the restore floor — it gives “reset to the start” without the agent ever needing a bare <code>ROLLBACK</code> (Lesson 04)</td></tr>
+    <tr><td>3</td><td>the loop</td><td>—</td></tr>
+    <tr><td>4</td><td>commit, then score <strong>on the same connection</strong></td>
+        <td>A reconnecting scorer reads pre-branch state (Reference 01)</td></tr>
+    <tr><td>5</td><td><code>DROP DATABASE</code></td><td>Next task starts clean</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p>Nothing here is new. It is the first time the constraints have had to hold <em>simultaneously</em>,
+which is the only reason ordering bugs exist.</p>
+
+<h2>Six exit paths, and confounds in four of them</h2>
+
+<div class="table-wrap">
+<table>
+  <thead><tr><th>Exit</th><th>Handling</th><th>Scored?</th></tr></thead>
+  <tbody>
+    <tr><td><code>commit_final_answer</code></td><td>Commit, score</td><td>✓</td></tr>
+    <tr><td><code>max_steps</code></td><td><strong>COMMIT — do not roll back</strong></td><td>✓</td></tr>
+    <tr><td><code>stop_reason: max_tokens</code></td><td>Harness artifact — exclude, report separately</td><td>✗</td></tr>
+    <tr><td><code>stop_reason: refusal</code></td><td>Harness artifact — exclude</td><td>✗</td></tr>
+    <tr><td><code>stop_reason: end_turn</code>, no tool call</td><td>Reprompt <strong>once</strong>, then stop</td><td>✗</td></tr>
+    <tr><td>exception</td><td>Mark incomplete — never score as a failure</td><td>✗</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p>Two of these are decisions rather than mechanics, and both follow from things you've already
+established.</p>
+
+<div class="callout warn">
+  <span class="label">On <code>max_steps</code>: commit, don't roll back</span>
+  <p>The instinct is that uncommitted work is speculative and should be discarded. But in Mode A the
+  agent's partial work is <em>already committed</em> — that is what Mode A means. Rolling back Mode
+  B's would score the two arms under different rules: partial credit for A, zero for B.</p>
+  <p>So both modes score the state the agent actually produced when its budget ran out. (Scoring the
+  uncommitted state on the same connection and then rolling back is equivalent — pick one, say which,
+  and apply it to both arms.)</p>
+</div>
+
+<div class="callout warn">
+  <span class="label">On <code>end_turn</code>: never spin</span>
+  <p>The model can return <code>end_turn</code> with no tool call — it stopped talking without doing
+  anything. A loop that just re-requests will burn the entire step budget on nothing, and every one
+  of those turns costs ~2 s and real tokens. Reprompt once with “call a tool or commit”, then
+  terminate as incomplete.</p>
+  <p>Easy to miss because it never happens in testing and happens eventually in a 40-task run.</p>
+</div>
+
+<h2>The prompts</h2>
+
+<p>Two system prompts, identical except for a paragraph describing the extra tools. That paragraph
+<em>is</em> the confound you agreed to state rather than net out:</p>
+
+<pre><code><span class="cmt"># both modes</span>
+"Use execute_sql to inspect the table and to make modifications. Only SELECT,
+ INSERT, UPDATE, DELETE, SHOW, DESCRIBE and EXPLAIN are permitted; DDL and
+ transaction-control statements are rejected by the harness, so do not attempt
+ them. When the table is in its final state, call commit_final_answer."
+
+<span class="cmt"># Mode B only</span>
+"You may checkpoint before a risky modification and restore afterwards if the
+ result is wrong. ... Restoring is cheap -- prefer trying an approach and undoing
+ it over reasoning about which approach is correct."</code></pre>
+
+<p>Note the first block states the guard. That's deliberate: the dispatcher makes rejection
+impossible to bypass, and the prompt makes it rare. You want both — the guarantee <em>and</em> the
+lower rejection rate, since every rejection costs a turn.</p>
+
+<p>The Mode B paragraph's last sentence is doing real work. “Prefer trying an approach and undoing
+it over reasoning about which approach is correct” is the behaviour you are testing for. Without it
+you'd likely measure an agent that has checkpoint tools and never uses them — and then you'd be
+measuring prompt design, not checkpointing.</p>
+
+<h2>Run it</h2>
+
+<p>The harness is testable with no API key and no budget — a scripted fake model walks every exit
+path:</p>
+
+<pre><code>uv run python assets/agent_loop.py</code></pre>
+
+<pre><code>scenario              mode  exit path             scored?  steps  txn statements
+normal commit         B     commit_final_answer   True         2  [START TRANSACTION, SAVEPOINT sp_0, COMMIT]
+explore then commit   B     commit_final_answer   True         5  [START TRANSACTION, SAVEPOINT sp_0, <span class="ok">SAVEPOINT sp_1,
+                                                                   ROLLBACK TO SAVEPOINT sp_1</span>, COMMIT]
+guard rejects DDL     B     commit_final_answer   True         2  [START TRANSACTION, SAVEPOINT sp_0, COMMIT]
+truncated             B     max_tokens            <span class="hit">False</span>        1  [START TRANSACTION, SAVEPOINT sp_0]
+refused               B     refusal               <span class="hit">False</span>        1  [START TRANSACTION, SAVEPOINT sp_0]
+end_turn no tool      A     end_turn              <span class="hit">False</span>        0  []
+driver error          B     commit_final_answer   True         2  [START TRANSACTION, SAVEPOINT sp_0, COMMIT]
+budget exhausted      B     max_steps             True         6  [START TRANSACTION, SAVEPOINT sp_0, <span class="ok">COMMIT</span>]</code></pre>
+
+<div class="callout check">
+  <span class="label">Why a dry run matters more than usual here</span>
+  <p>Every exit path is exercised, the transaction statements are asserted, and it costs nothing.
+  The alternative is discovering that <code>end_turn</code> spins — or that <code>max_steps</code>
+  rolls back — on task 23 of a paid 40-task run.</p>
+  <p>Keep the scripted client. When you change the loop, this is your regression test.</p>
+</div>
+
+<h2>Check yourself</h2>
+
+<div class="quiz">
+  <p class="quiz-q"><span class="num">Q1</span>Where must <code>CREATE TABLE</code> run relative to <code>START TRANSACTION</code>?</p>
+  <ul class="quiz-opts">
+    <li data-correct data-why="DDL causes an implicit commit, which deletes every savepoint in the session. Creating the table inside the transaction would destroy sp_0 before the agent took a single step — silently, with no error until the first restore.">Strictly before, since DDL commits</li>
+    <li data-why="Inside the transaction is exactly the failure from Lesson 01 branch A.">Immediately after, inside the transaction</li>
+    <li data-why="Order is the whole point here — reversing it destroys the savepoint stack.">Either works, order is irrelevant</li>
+    <li data-why="Any DDL after any savepoint destroys it, regardless of which savepoint.">After the first savepoint only</li>
+  </ul>
+</div>
+
+<div class="quiz">
+  <p class="quiz-q"><span class="num">Q2</span>The agent exhausts <code>max_steps</code> in Mode B. Rolling back its work would:</p>
+  <ul class="quiz-opts">
+    <li data-correct data-why="Mode A's partial work is already committed — that is what Mode A means. Discarding Mode B's gives partial credit to one arm and zero to the other for identical behaviour, which is a scoring rule that differs by mode.">Penalize Mode B asymmetrically versus A</li>
+    <li data-why="Mode A cannot roll back at all; its statements committed as they ran. Rolling back B is the opposite of matching A.">Match Mode A's behaviour exactly here</li>
+    <li data-why="It is the difference between scoring the agent's partial work and scoring the untouched initial table.">Have no effect on the score</li>
+    <li data-why="Nothing in transaction semantics requires it — an open transaction can be committed or rolled back. This is a scoring decision, not a database one.">Be required by transaction semantics here</li>
+  </ul>
+</div>
+
+<div class="quiz">
+  <p class="quiz-q"><span class="num">Q3</span><code>stop_reason</code> is <code>end_turn</code> with no tool call. The loop should:</p>
+  <ul class="quiz-opts">
+    <li data-correct data-why="Reprompt once with 'call a tool or commit', then terminate as incomplete. Re-requesting indefinitely burns the whole budget at ~2 s and real tokens per empty turn — and it never shows up in testing.">Not spin; terminate or reprompt once</li>
+    <li data-why="That is the spin. Nothing guarantees the model will start calling tools, and each attempt costs a turn.">Retry the same request until tools</li>
+    <li data-why="The agent never called commit_final_answer, so the task is unfinished — treating it as success fabricates a pass.">Treat it as a successful completion</li>
+    <li data-why="Scoring is fine; marking it passed is not. This exit is incomplete and belongs in the excluded set.">Score immediately and mark it passed</li>
+  </ul>
+</div>
+
+<div class="quiz">
+  <p class="quiz-q"><span class="num">Q4</span>Scoring <em>before</em> the commit requires the same connection because:</p>
+  <ul class="quiz-opts">
+    <li data-correct data-why="Under REPEATABLE READ, another connection reconstructs the pre-transaction row versions from the undo log — it sees the original table and reports a false negative. After a commit, any connection works; the same one is simply always correct.">Uncommitted writes are invisible elsewhere</li>
+    <li data-why="Reads are not blocked by row locks under MVCC — that is the point of multi-versioning. A write would block.">Row locks block other connections entirely</li>
+    <li data-why="True but irrelevant to scoring — the scorer never touches a savepoint.">The savepoint stack is connection scoped</li>
+    <li data-why="There is no per-connection result cache involved. The mechanism is multi-versioning.">MySQL caches results per connection</li>
+  </ul>
+</div>
+
+<div class="quiz">
+  <p class="quiz-q"><span class="num">Q5</span>Which exit should be excluded from the comparison rather than scored?</p>
+  <ul class="quiz-opts">
+    <li data-correct data-why="Truncation is a harness artifact, and a directional one: Mode B takes more steps, accumulates more tokens, and truncates more often — so scoring it penalises the arm under study. Report the excluded set alongside the result.">Truncation at the token limit</li>
+    <li data-why="Running out of steps is real agent behaviour under a budget you set identically for both arms. Score it.">Exhausting the configured step budget</li>
+    <li data-why="That is the normal path — the outcome the whole run exists to produce.">The agent committing its answer</li>
+    <li data-why="A rejection is a data point about agent behaviour. It costs a turn and the run continues.">A statement the guard rejected</li>
+  </ul>
+</div>
+
+<h2>What you have now</h2>
+
+<div class="table-wrap">
+<table>
+  <thead><tr><th>Piece</th><th>Asset</th><th>State</th></tr></thead>
+  <tbody>
+    <tr><td>Scorer</td><td><code>milestone0.py</code></td><td>40/40 verified</td></tr>
+    <tr><td>Mechanism</td><td><code>bench_restore.py</code></td><td>Chosen, costs measured</td></tr>
+    <tr><td>Guard</td><td><code>sql_guard.py</code></td><td>20/20, 0/40 blocked</td></tr>
+    <tr><td>Trace</td><td><code>trace.py</code></td><td>Capture + derive, demo passes</td></tr>
+    <tr><td>Loop</td><td><code>agent_loop.py</code></td><td>All six exits dry-run</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p>That is the whole harness. What remains is porting it into <code>src/dbagent/</code>, choosing
+<code>max_steps</code>, and running it — none of which needs a lesson.</p>
+
+<h3>Primary source</h3>
+<p>Read <a href="https://platform.claude.com/docs/en/api/handling-stop-reasons">Handling stop
+reasons</a>. It is the piece of the API most often skipped and most likely to corrupt a measurement:
+<code>end_turn</code>, <code>max_tokens</code>, <code>tool_use</code>, <code>pause_turn</code> and
+<code>refusal</code> each need a different branch, and treating any of them as “the model finished”
+produces a plausible number that is wrong.</p>
+
+<div class="footer">
+  <h3>Carry forward</h3>
+  <ul class="next-links">
+    <li><a href="../reference/task-lifecycle.html">Reference 07 — Task Lifecycle</a> (print this; it's the implementation checklist)</li>
+    <li><a href="../assets/agent_loop.py"><code>assets/agent_loop.py</code></a> — keep the scripted client as a regression test</li>
+    <li><a href="../reference/tool-boundary.html">Reference 05</a> · <a href="../reference/trace-schema.html">Reference 06</a></li>
+  </ul>
+
+  <div class="ask">
+    <span class="label">Ask your teacher</span>
+    <p>The most contestable thing here is the last line of the Mode B prompt: <em>“prefer trying an
+    approach and undoing it over reasoning about which approach is correct.”</em> That is me telling
+    the agent to explore. Without it you may measure an agent that has the tools and ignores them;
+    with it, you have arguably prompted the result into existence. Neither choice is neutral, and
+    whichever you pick belongs in the write-up as a stated design decision rather than buried in a
+    prompt string. Argue it — I don't think there's a clean answer.</p>
+  </div>
+</div>
+
+<script src="../assets/quiz.js"></script>
