@@ -114,12 +114,30 @@ one undefined. My earlier note said "hold this level and push slightly harder" �
 Remediation shipped: Reference 04 (`restore-mechanisms.html`) plus two inserted sections in
 lesson 03. See [[learning-records/0004-lesson-03-overshot-the-zpd.md]].
 
+## Decision — mechanism is savepoint, 2026-08-14
+
+Yash scoped Mode B to savepoint only. Endorsed; the reasoning was corrected (single-session does
+not rule out replay-prefix — it works fine on one connection). `MISSION.md` out-of-scope updated,
+Reference 04 carries a decision banner.
+See [[learning-records/0005-mechanism-decided-savepoint.md]].
+
+**Recurring pattern now confirmed across three records:** he converges on the right decision fast
+and under-specifies the justification. LR 0002 (DDL guard), LR 0005 (mechanism choice). The
+exception is LR 0003 (placebo), where the reasoning was the strong part. Since the deliverable is
+graded on *approach*, the justification is the graded artifact — say that directly rather than
+just supplying the missing reasons.
+
 ## Lesson 04 — planned
 
 The agent loop: tool schemas that make branching legible in the trace, and logging that can
 answer "which task did checkpointing rescue?" Natural follow-on — lesson 03 established that
 overhead scales with *branches per turn*, so the trace has to record branch structure or none of
 the cost analysis can be connected to outcomes.
+
+**Now doubles in importance:** dropping replay-prefix removed the fallback for agent-issued DDL,
+so the tool boundary is the only thing standing between the agent and silent corruption. The
+guard belongs in lesson 04 as a first-class topic, not an aside. One concept, concretely — per
+the pacing rules above.
 
 **Contestable claim planted in lesson 03**, flagged as such in the footer: the branches-per-turn
 table assumes a 2 s LLM turn and 1-vs-10 branches, neither measured. If Yash's agent branches

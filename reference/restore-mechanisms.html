@@ -6,6 +6,19 @@
 <p class="standfirst">Four competing ways to build one feature: undo. You pick <strong>one</strong>
 and Mode B is built out of it. They are alternatives, not stages.</p>
 
+<div class="callout check">
+  <span class="label">Decided — savepoint</span>
+  <p>Mode B is built on <code>SAVEPOINT</code> / <code>ROLLBACK TO SAVEPOINT</code>. The other
+  three stay on this page as context for the write-up's “mechanisms considered” paragraph and are
+  not implemented.</p>
+  <p><strong>The reason is not the single-session constraint</strong> — replay-prefix and
+  mysqldump both work fine on one connection. The reasons that hold: scope discipline; it is the
+  engine-native primitive the reference paper argues <em>for</em>; and at measured costs the
+  alternatives are analytically invisible against a ~2&nbsp;s LLM turn (0.03% vs 0.5%), so
+  comparing them would return a null result. Retire that comparison with a paragraph citing
+  <a href="restore-cost.html">Reference 03</a>, not a weekend of runs.</p>
+</div>
+
 <h2>The ladder</h2>
 
 <p>Think about undoing work on a document. The four mechanisms sit on a ladder from
@@ -124,10 +137,36 @@ docker run -d --name restored snap:v1          <span class="cmt"># restore</span
 </table>
 </div>
 
-<p><strong>Savepoint and replay-prefix are the live pair.</strong> Both restore correctly, so
-comparing them varies <em>cost</em> without varying <em>truthfulness</em> — the clean control
-from <a href="experiment-design-checklist.html">Reference 02</a>. The other two exist mainly to
-show what generality costs.</p>
+<p><strong>Savepoint is the chosen mechanism.</strong> Replay-prefix was the runner-up and would
+have been the clean cost-not-truthfulness control from
+<a href="experiment-design-checklist.html">Reference 02</a> — but at measured costs both sit far
+below LLM turn latency, so that comparison returns a null result. Cite the numbers instead of
+running it.</p>
+
+<div class="callout warn">
+  <span class="label">What choosing savepoint commits you to</span>
+  <p>Savepoint is the only candidate that <strong>fails silently</strong>. With replay-prefix
+  available as a fallback, an agent that emitted DDL could still be recovered; with savepoint
+  alone, DDL means unrecoverable corruption and a rollback that raises error 1305 after the write
+  is already durable.</p>
+  <p>So the DDL and transaction-control guard is no longer defensive hygiene — it is a
+  <strong>correctness requirement of the system</strong>, and it belongs in the write-up's
+  implementation section, not a footnote. Reject at the tool boundary, log every rejection, and
+  treat a rejection as a data point about agent behaviour rather than a harness failure.</p>
+</div>
+
+<h2>“What state is saved?”</h2>
+
+<p>The deliverable asks this directly, and savepoint has an unusually clean answer:
+<strong>nothing is saved.</strong> No copy, no snapshot, no storage allocated. A savepoint records
+a position in an undo log InnoDB was already maintaining for crash recovery — you are borrowing a
+structure the engine keeps for its own reasons. That is exactly why checkpoint cost measured
+<em>below resolution</em> in <a href="restore-cost.html">Reference 03</a>: there is nothing to
+pay for.</p>
+
+<p>Contrast the others: replay-prefix saves an action list, mysqldump saves a text file per
+checkpoint, docker commit saves an image layer per checkpoint. Only the native primitive saves
+nothing at all.</p>
 
 <div class="footer">
   <h3>Related</h3>

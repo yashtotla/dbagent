@@ -37,6 +37,10 @@ Not "understand checkpointing." **Land the position, by actually doing the resea
 
 ## Out of scope
 
+- **Replay-prefix, mysqldump, and docker commit as implemented mechanisms.** Decided 2026-08-14:
+  Mode B is savepoint-only. The others survive as a "mechanisms considered" paragraph backed by
+  the measured table in `reference/restore-cost.html`. See
+  `learning-records/0005-mechanism-decided-savepoint.md`.
 - The 20 SELECT-family tasks in `dev.jsonl`. Only the 40 modification tasks matter.
 - AgentBench's own harness (AgentRL server/client, docker-compose). Reimplement the ~60 lines;
   transaction-boundary control is the variable under study.
