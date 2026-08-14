@@ -61,11 +61,48 @@ Verified results now available to the project (all on MySQL 8.4.11):
 `assets/milestone0.py` is the runnable artifact. `build_table()` and `hash_table()` are written
 to be lifted into `src/dbagent/` as Yash's own project code.
 
-## Lesson 03 — planned
+## Lesson 03 — shipped
 
-Measuring restore cost honestly: what to time, what to exclude (process spawn, connection
-setup), how many repetitions, and placing `SAVEPOINT` against the paper's seconds-scale table.
-Natural follow-on since lesson 02 established 0.92 ms as the denominator.
+Measured before writing again, and again the measurement produced the lesson. First run used
+`SELECT 1` as the round-trip floor and reported `SAVEPOINT` at **negative cost** — impossible.
+Cause: `SELECT 1` returns a result set, `SAVEPOINT` returns an OK packet, so the floor did more
+work than the treatment. `DO 1` is the correct no-op. **This is the placebo error at
+microbenchmark scale**, and the lesson says so explicitly — a baseline must do the same work as
+the treatment minus only the thing being isolated.
+
+Measured on MySQL 8.4.11, `game_results` (44 rows × 5 cols), localhost Docker:
+
+| mechanism | p50 | × vs savepoint |
+|---|---|---|
+| `DO 1` floor | 0.117 ms | — |
+| `SAVEPOINT` | 0.104 ms | below resolution — **checkpointing is free** |
+| `ROLLBACK TO SAVEPOINT` 1 row | 0.209 ms | 1× |
+| `ROLLBACK TO SAVEPOINT` 44 rows | 0.646 ms | 3× |
+| replay-prefix k=0 → k=20 | 6.37 → 9.37 ms | 30–45× |
+| mysqldump + reload | 105 ms | 504× |
+| `docker commit` | 510 ms (n=3) | 2440× |
+
+Three findings worth the write-up: checkpoint is free and only restore costs; replay-prefix fits
+`6.4 ms + 0.15 ms × k` so the fixed reset dominates until k≈42 (**not** "linear in path length"
+as `CLAUDE.md` describes it); and `docker commit` at 510 ms independently reproduces the bottom
+of Xu et al.'s 0.416–6.915 s Docker range.
+
+**Corrected my own overclaim.** Reference 01 and Lesson 01 both said savepoint is "three to six
+orders of magnitude" below the paper's mechanisms. Measured, it is **two to six** — against
+CRIU's best case (0.060 s) a 44-row rollback is only ~93×. Fixed in both files with the
+correction shown.
+
+## Lesson 04 — planned
+
+The agent loop: tool schemas that make branching legible in the trace, and logging that can
+answer "which task did checkpointing rescue?" Natural follow-on — lesson 03 established that
+overhead scales with *branches per turn*, so the trace has to record branch structure or none of
+the cost analysis can be connected to outcomes.
+
+**Contestable claim planted in lesson 03**, flagged as such in the footer: the branches-per-turn
+table assumes a 2 s LLM turn and 1-vs-10 branches, neither measured. If Yash's agent branches
+once per task, the whole cost argument reframes. He has been told to audit it — see whether he
+does unprompted, which is the next signal on the research half of the mission.
 
 **Resolved — placebo mode is dead.** Yash refuted A′ on the session it shipped: belief drives
 policy, so a lying no-op restore produces a third condition rather than a control, and can score

@@ -138,9 +138,18 @@ show where it lands.</p>
 </div>
 
 <p>A <code>ROLLBACK TO SAVEPOINT</code> on an InnoDB table of a few dozen rows is a
-sub-millisecond undo-log walk — three to six orders of magnitude below every row above.
-That gap <em>is</em> the argument the paper is making, and you can demonstrate it on a
-laptop.</p>
+sub-millisecond undo-log walk. <strong>Measured on this machine: 0.209 ms with one row dirty,
+0.646 ms with all 44.</strong> See <a href="restore-cost.html">Reference 03</a> for the full
+table and the measurement rules.</p>
+
+<div class="callout warn">
+  <span class="label">Correction</span>
+  <p>An earlier version of this page said “three to six orders of magnitude below every row
+  above.” Measured, the honest range is <strong>two to six</strong>: against CRIU's best case
+  (0.060 s) a 44-row rollback is ~93×, which is two orders, not three. The six-order end holds
+  only against the AWS VM snapshot at 353 s. The gap is still the argument the paper is making —
+  just do not overstate its low end, because that is the end a reviewer checks.</p>
+</div>
 
 <p class="cite">Source: Xu, Zhou, Wu &amp; Kaffes, <a href="https://arxiv.org/abs/2510.05556">“Toward
 Systems Foundations for Agentic Exploration”</a>, arXiv:2510.05556, 7 Oct 2025.</p>

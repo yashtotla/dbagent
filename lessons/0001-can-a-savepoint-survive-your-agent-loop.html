@@ -191,9 +191,13 @@ Hide all tentative state, hold the row locks, make readers reconstruct the old v
 
 <p>That reframes your write-up. Rather than “I added undo to an agent,” you can write: <em>the
 generic mechanisms the paper benchmarks leave fork semantics undefined, whereas an engine-native
-primitive inherits a fully specified answer from the isolation level — for free, and three to six
+primitive inherits a fully specified answer from the isolation level — for free, and two to six
 orders of magnitude faster.</em> That is a claim with a mechanism behind it, and you can
 demonstrate the whole thing on a laptop.</p>
+
+<p class="cite">Since measured in <a href="0003-what-you-are-actually-timing.html">Lesson 03</a>:
+rollback is 0.209–0.646 ms against 0.060–353 s for the paper's mechanisms. The original draft of
+this line said “three to six” — corrected down after measurement.</p>
 
 <p>It also sharpens the open question your spec deliberately left unresolved — plain two-mode
 comparison versus an argument about native forking. The evidence is starting to favour the

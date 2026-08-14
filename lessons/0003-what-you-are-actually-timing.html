@@ -1,0 +1,256 @@
+<title>Lesson 03 — What you are actually timing</title>
+<link rel="stylesheet" href="../assets/lesson.css">
+
+<p class="eyebrow">dbagent · lesson 03 · ~15 minutes</p>
+<h1>What you are actually timing</h1>
+<p class="standfirst">I benchmarked all four candidate mechanisms. The numbers are good for you.
+The first one I produced was also impossible — a checkpoint that cost less than nothing — and
+fixing it is most of the lesson.</p>
+
+<h2>Why this one</h2>
+
+<p>You have a working scorer and a mechanism shortlist. The remaining question is cost, and it
+is the one your write-up leans on hardest: your spec asks “what the overhead is,” and the
+reference paper's entire argument is that generic mechanisms are <em>too slow</em>. If your cost
+numbers are soft, the argument is soft.</p>
+
+<p>Microbenchmarks at this scale are unusually easy to get wrong, because the thing you want to
+measure is smaller than the machinery you measure it with.</p>
+
+<div class="recall">
+  <span class="label">Before you read on — retrieval practice</span>
+  <p>You want the cost of <code>ROLLBACK TO SAVEPOINT</code>. You wrap it in
+  <code>time.perf_counter()</code> and get 0.2 ms. From memory: name everything inside that
+  0.2 ms that is <em>not</em> InnoDB undoing rows.</p>
+  <details>
+    <summary>Now compare</summary>
+    <p>At least four: Python call overhead, the driver serialising the statement, the TCP
+    round trip to the container, and MySQL parsing the SQL. On this machine those account for
+    roughly <strong>half</strong> of the 0.2 ms. If you do not measure them separately you will
+    report the network as if it were the storage engine.</p>
+  </details>
+</div>
+
+<h2>The mistake I made first</h2>
+
+<p>To separate real work from overhead you measure a no-op and subtract. I used
+<code>SELECT 1</code>. That produced this:</p>
+
+<pre><code>SELECT 1  (round-trip floor)     p50   0.132 ms
+SAVEPOINT sp1                    p50   0.105 ms   <span class="hit">net  -0.027</span></code></pre>
+
+<p>A negative cost. Creating a checkpoint apparently took less time than doing nothing. When a
+measurement is impossible, the instrument is wrong — so I measured the two no-ops against each
+other:</p>
+
+<div class="table-wrap">
+<table>
+  <thead><tr><th>Statement</th><th>p50</th><th>What the server sends back</th></tr></thead>
+  <tbody>
+    <tr><td><code>SELECT 1</code></td><td>0.1220 ms</td><td>Result set — row data <em>and</em> column metadata</td></tr>
+    <tr><td><code>DO 1</code></td><td>0.1056 ms</td><td>OK packet only</td></tr>
+    <tr><td><code>SAVEPOINT sp1</code></td><td>0.1051 ms</td><td>OK packet only</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p><code>SELECT 1</code> does <em>more</em> work than the thing it was supposed to baseline. It
+marshals a result set; <code>SAVEPOINT</code> does not. The floor was inflated by about 16%, so
+subtracting it understated everything — into negative territory for the cheapest operation.
+<code>DO 1</code> evaluates an expression and returns an OK packet: same shape, correct floor.</p>
+
+<div class="callout warn">
+  <span class="label">This is the placebo mistake again, in miniature</span>
+  <p>Last session you rejected the placebo arm because it did not hold the agent's beliefs fixed
+  — it changed the thing it claimed to control for. <code>SELECT 1</code> fails the same test at
+  the microbenchmark level: <strong>a baseline must do the same work as the treatment, minus only
+  the one thing being isolated.</strong> Different scale, identical error. When a control looks
+  neutral, ask what it is actually doing that the treatment is not.</p>
+</div>
+
+<h2>The numbers</h2>
+
+<p>Largest of the 40 modification tables — <code>game_results</code>, 44 rows × 5 columns —
+on MySQL 8.4.11 in Docker, localhost. Warmed up, n as shown, median reported.</p>
+
+<div class="table-wrap">
+<table>
+  <thead><tr><th>Mechanism</th><th>p50</th><th>p95</th><th>Net of floor</th><th>× vs savepoint</th></tr></thead>
+  <tbody>
+    <tr><td><code>DO 1</code> — round-trip floor</td><td>0.117 ms</td><td>0.141 ms</td><td>—</td><td>—</td></tr>
+    <tr><td><strong><code>SAVEPOINT</code></strong> (checkpoint)</td><td>0.104 ms</td><td>0.119 ms</td>
+        <td><strong>below resolution</strong></td><td>—</td></tr>
+    <tr><td><strong><code>ROLLBACK TO SAVEPOINT</code></strong>, 1 row dirty</td><td>0.209 ms</td><td>0.457 ms</td><td>0.092 ms</td><td>1×</td></tr>
+    <tr><td><strong><code>ROLLBACK TO SAVEPOINT</code></strong>, 44 rows dirty</td><td>0.646 ms</td><td>1.019 ms</td><td>0.529 ms</td><td>3×</td></tr>
+    <tr><td>replay-prefix, k=0</td><td>6.37 ms</td><td>7.64 ms</td><td>6.25 ms</td><td>30×</td></tr>
+    <tr><td>replay-prefix, k=20</td><td>9.37 ms</td><td>10.45 ms</td><td>9.25 ms</td><td>45×</td></tr>
+    <tr><td>mysqldump + reload</td><td>105 ms</td><td>114 ms</td><td>105 ms</td><td>504×</td></tr>
+    <tr><td><code>docker commit</code></td><td>510 ms</td><td>—</td><td>510 ms</td><td><strong>2440×</strong></td></tr>
+  </tbody>
+</table>
+</div>
+
+<h3>Three things fall out</h3>
+
+<p><strong>1 · Checkpointing is free; only restore costs anything.</strong>
+<code>SAVEPOINT</code> is indistinguishable from a bare round trip — it records a position in
+the undo log and nothing more. So the “checkpoint before every risky action” design has
+<em>no</em> steady-state cost. You pay only when you actually restore. That is a genuinely
+strong property and it is worth stating plainly.</p>
+
+<p><strong>2 · Replay-prefix is nearly flat in path length.</strong> Fitting the measured points:
+<code>≈ 6.4 ms + 0.15 ms × k</code>. The fixed reset — drop database, create database, create
+table, re-insert 44 rows — dominates until <strong>k ≈ 42 statements</strong>. Your spec
+describes replay-prefix as “restore cost linear in path length”; at realistic agent path lengths
+it is effectively <em>constant</em>, and the constant is what matters. Worth correcting in your
+notes.</p>
+
+<p><strong>3 · <code>docker commit</code> at 510 ms reproduces the paper.</strong> Xu et al.
+report 0.416–6.915 s for Docker. You measured 510 ms at the bottom of that range, on a small
+container. Independent confirmation on your own hardware is worth a sentence — it is the one
+number in your write-up that says “I checked their claim rather than citing it.”</p>
+
+<h2>Run it yourself</h2>
+
+<pre><code>uv run python assets/bench_restore.py</code></pre>
+
+<p>Read <a href="../assets/bench_restore.py"><code>assets/bench_restore.py</code></a> for the
+measurement hygiene, which matters as much as the numbers: warm up before timing, time
+<em>only</em> the rollback (setup outside the timed region), report median and p95 rather than
+mean, and keep the floor the same shape as the treatment.</p>
+
+<h2>Check yourself</h2>
+
+<div class="quiz">
+  <p class="quiz-q"><span class="num">Q1</span>Your no-op baseline is <code>SELECT 1</code>, but the operation you are timing returns only an OK packet. You get:</p>
+  <ul class="quiz-opts">
+    <li data-correct data-why="SELECT 1 marshals a result set, so the floor sits above the true round-trip cost. Subtracting an inflated floor understates every measurement — and drives the cheapest operation negative, which is how the error announced itself.">An inflated floor, understating measured cost</li>
+    <li data-why="The error runs the other way. SELECT 1 does more work than the no-op, so the floor is too high, not too low.">A deflated floor, overstating measured cost</li>
+    <li data-why="It is biased by construction — the baseline performs work the treatment does not.">An unbiased floor, correctly isolating work</li>
+    <li data-why="Both are round trips, but they return different payloads, and at 0.1 ms that difference is roughly 16% of the total.">No effect, both are round trips</li>
+  </ul>
+</div>
+
+<div class="quiz">
+  <p class="quiz-q"><span class="num">Q2</span><code>SAVEPOINT</code> measures at the round-trip floor, ±0.015 ms of drift. The honest claim is:</p>
+  <ul class="quiz-opts">
+    <li data-correct data-why="You cannot resolve a difference smaller than your run-to-run drift. 'Below measurement resolution' is precise and defensible; a specific small number would be false precision, and a reviewer will notice.">Its cost is below measurement resolution</li>
+    <li data-why="Claiming exactly zero asserts more precision than the apparatus supports.">It costs exactly zero milliseconds always</li>
+    <li data-why="Nothing is faster than nothing. A negative net is the signature of a miscalibrated floor, not a real finding.">It is faster than doing nothing</li>
+    <li data-why="The apparatus is fine once the floor matches the treatment's shape. The reading was the problem, not the tooling.">The measurement apparatus is fundamentally broken</li>
+  </ul>
+</div>
+
+<div class="quiz">
+  <p class="quiz-q"><span class="num">Q3</span>Replay-prefix measures 6.4 ms at k=0 and 9.4 ms at k=20. This means:</p>
+  <ul class="quiz-opts">
+    <li data-correct data-why="Fitting gives 6.4 ms fixed + 0.15 ms per statement, so the linear term only overtakes the constant around k=42. At realistic agent path lengths the cost is effectively flat — which contradicts the natural reading of 'linear in path length'.">Fixed reset cost dominates realistic paths</li>
+    <li data-why="The linear term is real but small — 0.15 ms per statement against a 6.4 ms constant.">Cost grows linearly, dominating everything</li>
+    <li data-why="Path length is the minor factor here. The fixed reset — drop, create, re-insert — is the bulk of it.">Path length is the only factor</li>
+    <li data-why="Replay-prefix is roughly 30x more expensive than a savepoint rollback even at k=0.">Replay is cheaper than savepoint rollback</li>
+  </ul>
+</div>
+
+<div class="quiz">
+  <p class="quiz-q"><span class="num">Q4</span><code>docker commit</code> costs roughly a quarter of one LLM turn. It becomes disqualifying when:</p>
+  <ul class="quiz-opts">
+    <li data-correct data-why="Overhead scales with branches, not with tasks. At one branch per turn a 510 ms snapshot is a ~25% tax — annoying, survivable. At ten branches per turn it is 5.1 s of overhead against ~2 s of thinking, and the agent spends most of its life snapshotting.">The agent branches many times per turn</li>
+    <li data-why="These tables are 12-44 rows. Data size is nowhere near the binding constraint here.">The database grows beyond available memory</li>
+    <li data-why="All 40 gold answers are single statements. Statement count per task is not what drives snapshot cost.">The task requires more than one statement</li>
+    <li data-why="Temperature affects sampling variance, not the cost of taking a snapshot.">The model temperature is set above zero</li>
+  </ul>
+</div>
+
+<div class="quiz">
+  <p class="quiz-q"><span class="num">Q5</span>Putting savepoint and <code>docker commit</code> side by side in one table is unfair because:</p>
+  <ul class="quiz-opts">
+    <li data-correct data-why="A savepoint rolls back rows in one table in one transaction. docker commit snapshots an entire container filesystem; CRIU snapshots process memory. Different coverage, so a raw speed ratio compares unlike units. The honest claim is about coverage versus cost, not raw speed.">They restore different amounts of state</li>
+    <li data-why="Everything here was measured on the same machine and the same container — that part is controlled.">They were measured on different hardware</li>
+    <li data-why="True but not the problem. Native versus generic is the interesting axis; the unfairness is in what each one actually restores.">One is native and one generic</li>
+    <li data-why="Sample sizes differ, which widens intervals but does not make the comparison categorically unfair.">The sample sizes are not equal</li>
+  </ul>
+</div>
+
+<h2>The claim you can actually make</h2>
+
+<p>The tempting headline is “savepoints are 2400× faster than container snapshots.” Do not write
+that. A savepoint rolls back <em>rows in one table in one transaction</em>.
+<code>docker commit</code> snapshots <em>an entire container filesystem</em>. CRIU snapshots
+<em>process memory</em>. Those cover wildly different amounts of state, and a ratio between them
+compares unlike units — the same category error you caught in the placebo arm.</p>
+
+<p>The defensible claim is about <strong>coverage versus cost</strong>:</p>
+
+<blockquote>
+  <p>For the state a DBBench agent actually mutates, an engine-native primitive restores it for
+  under a millisecond, while the generic mechanisms pay two to three orders of magnitude more to
+  cover state the task never touches. The generality is real; here it is unused.</p>
+</blockquote>
+
+<p>That is narrower, fully supported by the table, and much harder to attack.</p>
+
+<h3>The condition worth finding — where the paper's argument actually bites</h3>
+
+<p>The paper says generic mechanisms are “not fast enough” for agentic exploration. Your numbers
+let you say <em>when</em> that is true. Take an LLM tool-use turn at roughly 2 s — measure your
+own and substitute it, this is the one number here you should not take from me:</p>
+
+<div class="table-wrap">
+<table>
+  <thead><tr><th>Mechanism</th><th>1 branch / turn</th><th>10 branches / turn</th></tr></thead>
+  <tbody>
+    <tr><td>savepoint</td><td>0.03%</td><td>0.3%</td></tr>
+    <tr><td>replay-prefix</td><td>0.5%</td><td>5%</td></tr>
+    <tr><td>mysqldump</td><td>5%</td><td>53%</td></tr>
+    <tr><td><code>docker commit</code></td><td>26%</td><td><strong>255% — 2.5× slowdown</strong></td></tr>
+  </tbody>
+</table>
+</div>
+
+<p>At one branch per turn, even <code>docker commit</code> is a tax rather than a wall — the
+paper's claim is weak in that regime. It becomes decisive only under <strong>fine-grained</strong>
+branching, where an agent explores many candidates inside a single decision. So the paper's
+argument holds <em>conditionally</em>, and naming the condition is a contribution rather than a
+summary. It also tells you what your Mode B agent must actually do for any of this to matter:
+if it branches once per task, you will measure nothing.</p>
+
+<h3>State these limits</h3>
+<ul>
+  <li>Localhost Docker. No network latency, no contention, no other tenants.</li>
+  <li>44 rows, one table. Nothing here extrapolates to real data volumes.</li>
+  <li><code>docker commit</code> at n=3 — enough to place the order of magnitude, not to
+      characterise a distribution. Say n=3.</li>
+  <li>Savepoint requires holding a transaction open for the whole task. The manual warns that
+      long transactions prevent undo-log purging; harmless at 44 rows, not harmless generally.</li>
+  <li>Restore latency is not the only cost. Lock retention and undo-log growth are real and
+      unmeasured here.</li>
+</ul>
+
+<h3>Primary source</h3>
+<p>Read <a href="https://dev.mysql.com/doc/refman/8.0/en/innodb-undo-logs.html">MySQL 8.0
+Reference Manual §17.6.6, “Undo Logs”</a> — short, and it explains <em>why</em> your numbers came
+out this way: rollback walks a per-transaction undo chain rather than copying data, which is
+exactly why cost tracked rows-dirtied (0.209 ms → 0.646 ms from 1 row to 44) and not table size.
+A mechanism whose cost scales with what you touched, rather than what exists, is the property the
+paper is asking for.</p>
+
+<div class="footer">
+  <h3>Carry forward</h3>
+  <ul class="next-links">
+    <li><a href="../reference/restore-cost.html">Reference 03 — Restore Cost, measured</a> (print this; it is the table your write-up needs)</li>
+    <li><a href="../reference/experiment-design-checklist.html">Reference 02 — Experiment Design Checklist</a></li>
+    <li><a href="../reference/mysql-transaction-boundaries.html">Reference 01 — MySQL Transaction Boundaries</a></li>
+    <li>Next up: the agent loop itself — tool schemas that make branching legible in the trace, and logging that can answer “which task did checkpointing rescue?”</li>
+  </ul>
+
+  <div class="ask">
+    <span class="label">Ask your teacher</span>
+    <p>The contestable claim in this lesson is the branches-per-turn table. I picked 2 s for a
+    turn and 1 versus 10 branches without measuring either — both are assumptions dressed as
+    a result, and the conclusion moves a lot if they are wrong. Audit it. If your agent turns out
+    to branch once per task, that finding reframes the whole write-up and is worth more than any
+    latency number on this page.</p>
+  </div>
+</div>
+
+<script src="../assets/quiz.js"></script>

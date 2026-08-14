@@ -1,0 +1,134 @@
+<title>Reference — Restore Cost, measured</title>
+<link rel="stylesheet" href="../assets/lesson.css">
+
+<p class="eyebrow">dbagent · reference 03</p>
+<h1>Restore Cost, measured</h1>
+<p class="standfirst">Every number below was measured on this machine, not cited. Reproduce with
+<code>uv run python assets/bench_restore.py</code>.</p>
+
+<h2>Conditions</h2>
+
+<p>MySQL <strong>8.4.11</strong> in Docker on localhost · table <code>game_results</code>,
+<strong>44 rows × 5 columns</strong> (the largest of the 40 modification tasks) · warmed up
+before timing · median of n reported · floor measured with <code>DO 1</code>.</p>
+
+<h2>The table</h2>
+
+<div class="table-wrap">
+<table>
+  <thead><tr><th>Mechanism</th><th>n</th><th>p50</th><th>p95</th><th>Net of floor</th><th>× vs savepoint</th></tr></thead>
+  <tbody>
+    <tr><td><code>DO 1</code> — round-trip floor</td><td>400</td><td>0.117 ms</td><td>0.141 ms</td><td>—</td><td>—</td></tr>
+    <tr><td><code>SAVEPOINT</code> (checkpoint)</td><td>400</td><td>0.104 ms</td><td>0.119 ms</td>
+        <td><strong>below resolution</strong></td><td>—</td></tr>
+    <tr><td><code>ROLLBACK TO SAVEPOINT</code> · 1 row dirty</td><td>400</td><td>0.209 ms</td><td>0.457 ms</td><td>0.092 ms</td><td>1×</td></tr>
+    <tr><td><code>ROLLBACK TO SAVEPOINT</code> · 44 rows dirty</td><td>400</td><td>0.646 ms</td><td>1.019 ms</td><td>0.529 ms</td><td>3×</td></tr>
+    <tr><td>replay-prefix · k=0</td><td>40</td><td>6.37 ms</td><td>7.64 ms</td><td>6.25 ms</td><td>30×</td></tr>
+    <tr><td>replay-prefix · k=1</td><td>40</td><td>7.04 ms</td><td>7.57 ms</td><td>6.93 ms</td><td>34×</td></tr>
+    <tr><td>replay-prefix · k=5</td><td>40</td><td>7.68 ms</td><td>8.35 ms</td><td>7.57 ms</td><td>37×</td></tr>
+    <tr><td>replay-prefix · k=20</td><td>40</td><td>9.37 ms</td><td>10.45 ms</td><td>9.25 ms</td><td>45×</td></tr>
+    <tr><td>mysqldump + reload</td><td>10</td><td>105 ms</td><td>114 ms</td><td>105 ms</td><td>504×</td></tr>
+    <tr><td><code>docker commit</code></td><td>3</td><td>510 ms</td><td>—</td><td>510 ms</td><td>2440×</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p><strong>Replay-prefix fit:</strong> <code>≈ 6.4 ms + 0.15 ms × k</code>. The fixed reset
+dominates until <strong>k ≈ 42</strong>, so at realistic path lengths the cost is effectively
+constant — not “linear in path length” as it is usually described.</p>
+
+<h2>Measurement rules that produced these</h2>
+
+<ol>
+  <li><strong>The floor must match the treatment's shape.</strong> <code>SELECT 1</code> returns
+      a result set; <code>SAVEPOINT</code> returns an OK packet. Using the former as a floor
+      inflates it ~16% and drives cheap operations negative. Use <code>DO 1</code>.</li>
+  <li><strong>Time only the operation.</strong> Setup — the <code>SAVEPOINT</code>, the dirtying
+      <code>UPDATE</code> — belongs outside the timed region.</li>
+  <li><strong>Warm up.</strong> First calls pay for connection state and page cache.</li>
+  <li><strong>Report p50 and p95, never the mean.</strong> p95 is 2.2× p50 for the 1-row
+      rollback; a mean would hide that.</li>
+  <li><strong>Do not out-claim your resolution.</strong> Run-to-run drift here is ≈0.015 ms.
+      Anything smaller is “below measurement resolution,” not a number.</li>
+  <li><strong>Report small n as small n.</strong> <code>docker commit</code> at n=3 places an
+      order of magnitude; it does not characterise a distribution.</li>
+</ol>
+
+<h2>Against the published numbers</h2>
+
+<p>Xu et al. report 0.416–6.915 s for Docker. The 510 ms measured here sits at the bottom of
+that range — independent confirmation on different hardware, worth one sentence in the write-up.</p>
+
+<div class="callout warn">
+  <span class="label">Correction to Reference 01</span>
+  <p>An earlier version of <a href="mysql-transaction-boundaries.html">Reference 01</a> claimed
+  savepoint rollback is “three to six orders of magnitude” below the paper's mechanisms. Measured,
+  the correct range is <strong>two to six</strong>: against CRIU's best case (0.060 s) a 44-row
+  rollback is ~93× — two orders, not three. The six-order end holds only against the AWS VM
+  snapshot (353 s). Fixed in place.</p>
+</div>
+
+<h2>Coverage, not speed</h2>
+
+<p>Do not write “savepoints are 2440× faster.” The mechanisms restore different amounts of state:</p>
+
+<div class="table-wrap">
+<table>
+  <thead><tr><th>Mechanism</th><th>Restores</th><th>Misses</th></tr></thead>
+  <tbody>
+    <tr><td><code>ROLLBACK TO SAVEPOINT</code></td><td>Rows in one transaction</td>
+        <td>DDL, filesystem, process memory, anything outside the session</td></tr>
+    <tr><td>replay-prefix</td><td>Whole database from init</td><td>Filesystem, process memory</td></tr>
+    <tr><td>mysqldump</td><td>Whole database, logically</td><td>Process memory, container state</td></tr>
+    <tr><td><code>docker commit</code></td><td>Container filesystem</td><td>Process memory (needs CRIU)</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p>The defensible claim:</p>
+
+<blockquote>
+  <p>For the state a DBBench agent actually mutates, an engine-native primitive restores it for
+  under a millisecond, while generic mechanisms pay two to three orders of magnitude more to
+  cover state the task never touches. The generality is real; here it is unused.</p>
+</blockquote>
+
+<h2>When the paper's argument bites</h2>
+
+<p>Restore overhead as a fraction of one LLM tool-use turn. <strong>Turn latency assumed at 2 s —
+measure your own and substitute it.</strong></p>
+
+<div class="table-wrap">
+<table>
+  <thead><tr><th>Mechanism</th><th>1 branch / turn</th><th>10 branches / turn</th></tr></thead>
+  <tbody>
+    <tr><td>savepoint</td><td>0.03%</td><td>0.3%</td></tr>
+    <tr><td>replay-prefix</td><td>0.5%</td><td>5%</td></tr>
+    <tr><td>mysqldump</td><td>5%</td><td>53%</td></tr>
+    <tr><td><code>docker commit</code></td><td>26%</td><td>255% — 2.5× slowdown</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p>Overhead scales with <em>branches</em>, not tasks. At one branch per turn the generic
+mechanisms are a tax; only fine-grained branching makes them a wall. The paper's claim therefore
+holds <strong>conditionally</strong>, and naming the condition is a contribution rather than a
+summary.</p>
+
+<h2>Limits to state</h2>
+<ul>
+  <li>Localhost Docker — no network latency, no contention, no other tenants</li>
+  <li>44 rows, one table; nothing extrapolates to real data volumes</li>
+  <li><code>docker commit</code> at n=3</li>
+  <li>Savepoint needs a transaction held open all task; long transactions block undo-log purging</li>
+  <li>Lock retention and undo-log growth are real costs, unmeasured here</li>
+</ul>
+
+<div class="footer">
+  <h3>Related</h3>
+  <ul class="next-links">
+    <li><a href="../lessons/0003-what-you-are-actually-timing.html">Lesson 03 — What you are actually timing</a></li>
+    <li><a href="../assets/bench_restore.py"><code>assets/bench_restore.py</code></a></li>
+    <li><a href="mysql-transaction-boundaries.html">Reference 01</a> · <a href="experiment-design-checklist.html">Reference 02</a></li>
+  </ul>
+</div>
