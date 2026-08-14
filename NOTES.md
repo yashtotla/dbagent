@@ -299,6 +299,28 @@ is expensive, maximal capture plus a derived view is correct. Twice now
 observability for tidiness — flag that trade explicitly when making it, because it is where he
 reliably finds the flaw and is reliably right.
 
+## Deferred by design — mining the paper for derived signals
+
+Yash's idea, and a good one: take metric ideas from Xu et al. for the derived layer. **Deliberately
+not done now** — derived signals are pure functions of the raw log, so this costs nothing after the
+run and constrains nothing before it. Worth noting to him that his own architecture is what made
+this deferrable; under the curated schema it would have been urgent.
+
+## Open decision — the write-up's spine, now ripe
+
+`CLAUDE.md` leaves this open and says not to resolve it unilaterally. Raised with him, not decided.
+The argument for deciding *before* the run:
+
+- **The two-mode spine can produce nothing.** Single-statement tasks; if A scores 38/40 and B 39/40
+  there is one discordant pair and no reportable difference (Reference 02 threshold: ~6 clean flips).
+  That is a plausible outcome, not a pessimistic one.
+- **The regime-boundary spine is robust to that.** "Mechanism latency is irrelevant in a serial
+  agent loop (0.01% of wall clock) and decisive only under model-free branching" rests on
+  measurements already in hand and holds regardless of how the agent performs.
+
+It changes what the run must produce: under the second spine the traces carry the argument and named
+cases matter more than the score. **His call — do not resolve it for him.**
+
 ## Lesson 06 — planned
 
 The agent loop: tool schemas that make branching legible in the trace, and logging that can
