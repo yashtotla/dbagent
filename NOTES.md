@@ -67,7 +67,23 @@ Measuring restore cost honestly: what to time, what to exclude (process spawn, c
 setup), how many repetitions, and placing `SAVEPOINT` against the paper's seconds-scale table.
 Natural follow-on since lesson 02 established 0.92 ms as the denominator.
 
-**Open teaching thread:** the placebo mode (A′) is the lesson's strongest methods claim and also
-the most likely thing Yash cuts for time. Lesson 02 deliberately invites him to argue it rather
-than accept it. If he defends cutting it, that reasoning belongs in the write-up's limitations —
-do not let him drop it silently.
+**Resolved — placebo mode is dead.** Yash refuted A′ on the session it shipped: belief drives
+policy, so a lying no-op restore produces a third condition rather than a control, and can score
+below Mode A. Lesson 02 and Reference 02 have been corrected in place, with the correction shown
+rather than quietly patched. See [[learning-records/0003-placebo-control-refuted.md]].
+Replacement guidance: state that Mode B is a system, measure the policy change (branches per
+task, restores issued, restores preceding a pass), and if there is time use savepoint vs
+replay-prefix — a control that varies *cost* not *truthfulness*.
+
+## Calibration update — 2026-08-14
+
+Yash has flipped from absorbing to auditing. He caught a design flaw I had reasoned through and
+written down, and separately caught a miscategorised row in the Gate 2 table. This is the
+research half of the mission working, and it changes how to write lessons:
+
+- **Plant contestable claims deliberately and say they are contestable.** He engages with them.
+- **Never present a control as settled** without stating what the agent believes under it.
+- Do not soften corrections into "good point, but" — he was right twice; say so and fix the file.
+- Pattern still worth watching from [[learning-records/0002-ddl-guard-is-necessary-but-not-sufficient.md]]:
+  strong at auditing a claim in front of him, weaker at enumerating the rest of a category
+  unprompted. Keep the explicit "what else is in this category?" beat.

@@ -54,22 +54,56 @@ dominates the work it protects.</p>
     <tr><td>Checkpoint mechanism</td><td>Under study</td><td>—</td></tr>
     <tr><td>Model id, prompt text, task order, <code>max_steps</code>, temperature</td>
         <td>Hold fixed</td><td>Pin the exact model snapshot; log it per run</td></tr>
-    <tr><td>Tool schema · system-prompt length</td>
-        <td><strong>Unavoidably differs</strong></td>
-        <td><strong>Placebo mode A′</strong> — Mode B's schema and prompt, no-op checkpoint/restore</td></tr>
-    <tr><td>Productive step budget</td><td>Differs</td>
-        <td>Budget productive steps separately, or report both counts</td></tr>
-    <tr><td>Action-space guard (DDL + txn-control)</td><td>Must not differ</td>
+    <tr><td>Action-space guard (DDL + txn-control)</td><td>Hold fixed</td>
         <td>Same guard in <strong>both</strong> modes. Free: 0/40 gold labels contain either.</td></tr>
-    <tr><td>Connection lifetime</td><td>Differs</td>
-        <td>One connection held open per task in both modes</td></tr>
+    <tr><td>Connection lifetime</td><td>Hold fixed</td>
+        <td>One connection per task, both modes. <strong>Never auto-reconnect</strong> — no
+        pool, no <code>ping(reconnect=True)</code>. On a drop, fail loudly and retry the task
+        from the top.</td></tr>
+    <tr><td>Productive step budget</td><td>Differs</td>
+        <td>Checkpoint calls consume steps. Budget productive steps separately, or report both counts</td></tr>
+    <tr><td><strong>Tool schema · prompt · exploration policy</strong></td>
+        <td><strong>Inseparable</strong></td>
+        <td>No control exists. Measure the policy change instead — see below</td></tr>
   </tbody>
 </table>
 </div>
 
-<p><strong>A′ − A</strong> = the cost of merely mentioning checkpointing.
-<strong>B − A′</strong> = the mechanism itself. Without A′, those two are fused and the headline
-claim is unsupported.</p>
+<div class="callout warn">
+  <span class="label">Why there is no placebo here</span>
+  <p>The obvious control — Mode B's schema and prompt with no-op <code>checkpoint()</code> /
+  <code>restore()</code> that report success — <strong>does not work</strong>, and an earlier
+  version of this page was wrong to recommend it.</p>
+  <p>A placebo is valid when the belief being controlled for does not interact with the
+  mechanism. Here belief drives <em>policy</em>: an agent told it can restore will rationally
+  try a cheap guess first. Under a lying no-op it then proceeds from corrupted state. That arm
+  is not “Mode A with a longer prompt” — it is a third condition, present in neither arm, and
+  it can score <em>below</em> Mode A.</p>
+  <p>It also fails on its own terms: if the agent rarely explores, A′ ≈ A and the control is
+  inert; if it explores often, A′ is actively sabotaged. <strong>Uninformative when safe,
+  unsafe when informative.</strong> The decomposition
+  <code>B − A = [prompt] + [mechanism]</code> is ill-posed, because the prompt's effect is
+  conditional on the mechanism working.</p>
+</div>
+
+<p><strong>What to do instead.</strong> Accept that Mode B is a <em>system</em> — prompt, tools
+and mechanism together — and say so. The comparison is between two agent designs, which is what
+the task asks for. Then make the policy change visible rather than netting it out:</p>
+
+<ul>
+  <li><strong>Count branches per task</strong> in each mode — distinct candidate actions tried
+      at a decision point. If B explores 2.3 and A explores 1.0, that <em>is</em> the policy
+      change, quantified.</li>
+  <li><strong>Count restores actually issued</strong>, and how many preceded a task that went on
+      to pass. This is what produces the named recovery cases the deliverable asks for.</li>
+  <li><strong>If time allows, vary cost not truthfulness</strong> — savepoint vs replay-prefix.
+      Both restore <em>correctly</em>, so the agent's plan stays valid and only mechanism cost
+      differs. That is a clean control, and it is the comparison the reference paper is about.</li>
+</ul>
+
+<p>A′ is still worth building as a <em>separate</em> experiment: it models the lesson-01 DDL bug
+and answers “what does an agent do when its checkpoint silently fails?” Just do not call it a
+control.</p>
 
 <h2>Gate 3 · Can the number carry the claim?</h2>
 

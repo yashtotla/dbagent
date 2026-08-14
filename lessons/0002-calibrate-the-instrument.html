@@ -143,12 +143,12 @@ gold SQL exec: median 0.92 ms</code></pre>
 </div>
 
 <div class="quiz">
-  <p class="quiz-q"><span class="num">Q4</span>What separates the prompt effect from the mechanism effect?</p>
+  <p class="quiz-q"><span class="num">Q4</span>A no-op <code>restore()</code> that reports success gives you:</p>
   <ul class="quiz-opts">
-    <li data-correct data-why="A placebo mode: identical tool schema and system prompt to Mode B, but checkpoint and restore are no-ops that always report success. A′ minus A isolates the prompt effect; B minus A′ isolates the mechanism. Cheap to build and it is the single strongest methods move available to you here.">A placebo mode with no-op tools</li>
-    <li data-why="More tasks tighten the confidence interval but cannot separate two variables that move together in every run.">A larger sample of benchmark tasks</li>
-    <li data-why="Fixing temperature removes sampling noise, which is necessary but does not disentangle prompt from mechanism.">A second model at temperature zero</li>
-    <li data-why="A larger budget changes both arms equally and leaves the confound exactly where it was.">A longer step budget for both</li>
+    <li data-correct data-why="An agent told it can restore will rationally try a cheap guess first. Under a lying no-op it then proceeds from corrupted state — so this arm can score BELOW plain Mode A. It is not a control; it is a third condition present in neither arm. It is, however, a good separate experiment: it models the lesson-01 DDL bug.">An agent misled into unsafe exploration</li>
+    <li data-why="It cannot be clean. The prompt's effect depends on the mechanism working, so a lying mechanism changes the agent's policy rather than holding it fixed.">A clean estimate of prompt effect</li>
+    <li data-why="No-op tools measure nothing about cost — they do no work at all.">A lower bound on mechanism cost</li>
+    <li data-why="It is biased by construction, and biased in a direction that penalises the arm carrying the tool schema.">An unbiased control for tool schema</li>
   </ul>
 </div>
 
@@ -174,24 +174,52 @@ correct and incomplete:</p>
   <tbody>
     <tr><td>Checkpoint mechanism</td><td>Yes — intended</td><td><strong>The variable under study</strong></td></tr>
     <tr><td>Model, prompt text, task order, max_steps, temperature</td><td>Must not</td><td>Already on your list</td></tr>
-    <tr><td><strong>Tool schema</strong></td><td>Yes, unavoidably</td><td>Placebo mode A′</td></tr>
-    <tr><td><strong>System-prompt length</strong> (describing the tools)</td><td>Yes, unavoidably</td><td>Placebo mode A′</td></tr>
-    <tr><td><strong>Productive step budget</strong> — checkpoint calls consume steps</td><td>Yes</td><td>Budget productive steps, or report both counts</td></tr>
     <tr><td><strong>Action-space guard</strong> (DDL / txn-control)</td><td>Must not</td><td>Same guard in <em>both</em> modes — verified free, 0/40 gold labels need it</td></tr>
-    <tr><td><strong>Connection lifetime</strong> — Mode B must hold one open</td><td>Yes</td><td>Hold one per task in both modes</td></tr>
+    <tr><td><strong>Connection lifetime</strong></td><td>Must not</td>
+        <td>One per task in both modes. <strong>Never auto-reconnect</strong> — no pool, no
+        <code>ping(reconnect=True)</code>. A silent reconnect destroys the Mode B branch with
+        no error: the lesson-01 failure mode in a different hat. Fail loudly, retry from the top.</td></tr>
     <tr><td><strong>Model snapshot drift</strong></td><td>Between runs</td><td>Pin the exact model id; record it in the log</td></tr>
+    <tr><td><strong>Productive step budget</strong> — checkpoint calls consume steps</td><td>Yes</td><td>Budget productive steps, or report both counts</td></tr>
+    <tr><td><strong>Tool schema · prompt · exploration policy</strong></td><td><strong>Inseparable</strong></td><td>No control exists — measure the policy change instead</td></tr>
   </tbody>
 </table>
 </div>
 
+<div class="callout warn">
+  <span class="label">Correction — an earlier version of this lesson was wrong here</span>
+  <p>It recommended a <strong>placebo mode A′</strong>: Mode B's schema and prompt, with
+  <code>checkpoint()</code> / <code>restore()</code> as no-ops reporting success. Yash refuted
+  it, correctly.</p>
+  <p>A placebo is valid when the belief being controlled for does not interact with the
+  mechanism. Here belief drives <em>policy</em>. Facing three candidate actions, a Mode B agent
+  can rationally try a cheap guess first because restore is available; an A′ agent inherits that
+  policy and then proceeds from corrupted state. A′ is not “A with a longer prompt” — it is a
+  third condition present in neither arm, and it can score <em>below</em> A.</p>
+  <p>It also fails on its own terms. If the agent rarely explores, A′ ≈ A and the control is
+  inert. If it explores often, A′ is actively sabotaged. <strong>Uninformative when safe, unsafe
+  when informative</strong> — there is no operating point where it earns its cost. The
+  decomposition <code>B − A = [prompt] + [mechanism]</code> is ill-posed, because the prompt's
+  effect is conditional on the mechanism working.</p>
+</div>
+
 <div class="callout">
-  <span class="label">The move worth stealing</span>
-  <p><strong>Mode A′ — the placebo.</strong> Identical tool schema and system prompt to Mode B,
-  but <code>checkpoint()</code> and <code>restore()</code> do nothing and always report success.
-  Then <em>A′ − A</em> is the cost of merely mentioning checkpointing, and <em>B − A′</em> is
-  the mechanism. Two extra runs, no new machinery, and it converts “Mode B scored higher” into
-  a claim about checkpointing specifically. Reviewers who build systems ask for this; getting
-  there first is the difference between a starter task and a research note.</p>
+  <span class="label">What to do instead</span>
+  <p>Accept that Mode B is a <strong>system</strong> — prompt, tools and mechanism together —
+  and state it. The comparison is between two agent designs, which is exactly what the task
+  asks for. Then make the policy change <em>visible</em> rather than netting it out:</p>
+  <ul>
+    <li><strong>Branches per task.</strong> Distinct candidate actions tried at a decision point.
+        B at 2.3 versus A at 1.0 <em>is</em> the policy change, quantified.</li>
+    <li><strong>Restores issued</strong>, and how many preceded a task that went on to pass.
+        This is what produces the named recovery cases the deliverable requires.</li>
+    <li><strong>Vary cost, not truthfulness.</strong> Savepoint versus replay-prefix: both
+        restore <em>correctly</em>, so the agent's plan stays valid and only mechanism cost
+        differs. That is a clean control — and it is the comparison the reference paper is
+        actually about.</li>
+  </ul>
+  <p>Keep A′ as a <em>separate</em> experiment. It models the lesson-01 DDL bug and answers
+  “what does an agent do when its checkpoint silently fails?” Just do not call it a control.</p>
 </div>
 
 <h2>What 40 tasks cannot support</h2>
@@ -240,10 +268,11 @@ reproduce. Seeing the flaw in a published paper is the fastest way to stop makin
 
   <div class="ask">
     <span class="label">Ask your teacher</span>
-    <p>The placebo mode is the part I would push back on if I were reviewing you — it is extra
-    work and you might reasonably decide the weekend does not have room. That is a defensible
-    call, but make it deliberately and write it down. Argue it with me in the session; if you
-    can defend cutting it, that reasoning belongs in the write-up's limitations.</p>
+    <p>This page has already been corrected once, by you. That is the loop working — the
+    placebo survived my writing it down and did not survive your reading it. Keep doing that
+    to everything here, including the confound table above and the six-flip threshold. If a
+    control looks clean, ask what the agent <em>believes</em> under it and whether that belief
+    is still true.</p>
   </div>
 </div>
 
