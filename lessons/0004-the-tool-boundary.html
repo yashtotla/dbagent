@@ -1,0 +1,233 @@
+<title>Lesson 04 — The tool boundary is your only enforcement point</title>
+<link rel="stylesheet" href="../assets/lesson.css">
+
+<p class="eyebrow">dbagent · lesson 04 · ~12 minutes</p>
+<h1>The tool boundary is your only enforcement point</h1>
+<p class="standfirst">You chose savepoint, which removed your fallback for agent-issued DDL. The
+tool dispatcher is now the only thing standing between the agent and silent corruption. One
+concept, one guard, one design rule.</p>
+
+<h2>The idea, in one analogy</h2>
+
+<p>You would never rely on a docstring to prevent SQL injection. Documentation describes what
+callers <em>should</em> send; validation decides what actually runs. Every engineer already knows
+this — the trick is noticing it applies to agents too.</p>
+
+<div class="table-wrap">
+<table>
+  <thead><tr><th></th><th>System prompt</th><th>Tool dispatcher</th></tr></thead>
+  <tbody>
+    <tr><td>Analogous to</td><td>Documentation</td><td>Input validation</td></tr>
+    <tr><td>Force</td><td><strong>Advisory</strong> — the model may ignore it</td><td><strong>Mandatory</strong> — you decide what executes</td></tr>
+    <tr><td>Failure mode</td><td>Silent non-compliance</td><td>An explicit, logged rejection</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p><strong>The agent cannot touch the database except through a tool call you dispatch.</strong>
+That makes the dispatcher the only place a correctness constraint can actually be enforced. Write
+“never issue DDL” in the system prompt and you have expressed a preference. Reject it at the tool
+boundary and you have built a guarantee.</p>
+
+<div class="callout">
+  <span class="label">This is Anthropic's own guidance, and it names your research question</span>
+  <p>From the agent-design docs: “Claude emits tool calls; your harness handles them. The shape of
+  those tool calls determines what the harness can do.” On when to promote an action to a
+  dedicated tool: “<strong>Reversibility is a useful criterion:</strong> hard-to-reverse actions
+  … can be gated behind user confirmation.”</p>
+  <p>That is your project's thesis arriving from the other direction. The tool-design literature
+  already treats <em>irreversibility</em> as the thing that decides where a boundary goes; you are
+  measuring what happens when you make the action reversible instead. Worth a sentence in the
+  write-up.</p>
+</div>
+
+<h2>Allowlist, not blocklist</h2>
+
+<p>Now the guard itself. The obvious implementation is a blocklist — reject anything starting with
+<code>CREATE</code>, <code>ALTER</code>, <code>DROP</code>. It fails, and the way it fails is the
+lesson.</p>
+
+<p>Consider what the agent sends and what each approach extracts:</p>
+
+<div class="table-wrap">
+<table>
+  <thead><tr><th>Agent sends</th><th>Verb extracted</th><th>Blocklist</th><th>Allowlist</th></tr></thead>
+  <tbody>
+    <tr><td><code>DROP TABLE t</code></td><td><code>DROP</code></td>
+        <td>reject ✓</td><td>reject ✓</td></tr>
+    <tr><td><code>INSERT … VALUES ('DROP TABLE x')</code></td><td><code>INSERT</code></td>
+        <td><strong>reject ✗</strong> — substring match on a string literal</td><td>allow ✓</td></tr>
+    <tr><td><code>/* harmless */ DROP TABLE t</code></td><td><code>''</code> — nothing matches</td>
+        <td><strong>allow ✗ — fails OPEN</strong></td><td>reject ✓ — fails CLOSED</td></tr>
+  </tbody>
+</table>
+</div>
+
+<div class="callout warn">
+  <span class="label">The asymmetry that decides it</span>
+  <p>A comment prefix means the leading-keyword regex extracts <strong>nothing</strong>. Under a
+  blocklist, “nothing” isn't on the forbidden list, so it passes — and MySQL executes the
+  <code>DROP</code> (verified). Under an allowlist, “nothing” isn't on the permitted list either,
+  so it's rejected.</p>
+  <p>Same input, same parse failure, opposite outcome. <strong>A blocklist requires you to
+  enumerate every dangerous thing; an allowlist requires you to enumerate only what you need.</strong></p>
+</div>
+
+<p>That should land personally. Two sessions ago you found the DDL guard yourself and stopped at
+DDL — when three of the four savepoint killers aren't DDL. An allowlist is the <em>structural</em>
+fix for exactly that failure mode: it doesn't ask you to think of everything. And the list you do
+need is short, because all 40 gold labels are <code>INSERT</code> (20) or <code>UPDATE</code> (20).</p>
+
+<h2>The tool</h2>
+
+<p>Tool definitions are just JSON Schema. Two things matter here — the description tells the model
+<em>when</em> to call it, and <code>strict</code> guarantees the input validates before you ever
+see it:</p>
+
+<pre><code>EXECUTE_SQL = {
+    "name": "execute_sql",
+    "description": (
+        "Run one SQL statement against the task's table and return the result. "
+        "Call this to inspect state or to make a modification. Only SELECT, INSERT, "
+        "UPDATE, DELETE, SHOW, DESCRIBE and EXPLAIN are permitted — DDL and "
+        "transaction-control statements are rejected by the harness."
+    ),
+    <span class="ok">"strict": True,</span>
+    "input_schema": {
+        "type": "object",
+        "properties": {"sql": {"type": "string", "description": "A single SQL statement."}},
+        "required": ["sql"],
+        <span class="ok">"additionalProperties": False,</span>
+    },
+}</code></pre>
+
+<p>The dispatcher is where the guard lives — before execution, never after:</p>
+
+<pre><code>def dispatch(cur, name, args):
+    if name == "execute_sql":
+        reason = sql_guard.check(args["sql"])      <span class="cmt"># the enforcement point</span>
+        if reason:
+            log(step, "rejected", args["sql"], reason)
+            return reason                          <span class="cmt"># back to the agent, not fatal</span>
+        cur.execute(args["sql"])
+        return format_rows(cur.fetchall())</code></pre>
+
+<p>Note what a rejection <em>is</em>: a tool result the agent reads and can act on, plus a trace
+event. Not a crash, not a silent drop. The agent gets to try something else, and you get a record
+that it reached for DDL — which is a finding about agent behaviour, not a harness failure.</p>
+
+<h2>Run it</h2>
+
+<pre><code>uv run python assets/sql_guard.py</code></pre>
+
+<pre><code>  ok   allow  INSERT INTO t (a) VALUES ('DROP TABLE custom   DDL inside a string literal
+  ok   reject /* harmless */ DROP TABLE t                    comment-prefixed DDL
+  ok   reject SET autocommit = 1                             implicitly commits
+  ...
+  <span class="ok">20/20 guard cases pass</span>
+  <span class="ok">gold labels blocked: 0/40</span>  (must be 0 — the guard costs no reachable score)</code></pre>
+
+<p>And the end-to-end proof, from the same MySQL 8.4.11 container:</p>
+
+<pre><code>unguarded  agent DDL → ok                          rollback <span class="hit">FAILED (1305)</span>  final=<span class="hit">'tentative'</span>
+guarded    agent DDL → REJECTED: CREATE not allowed rollback <span class="ok">succeeded</span>       final=<span class="ok">'original'</span></code></pre>
+
+<div class="callout check">
+  <span class="label">That's the win</span>
+  <p>Identical agent behaviour. The only difference is a guard at the tool boundary, and it is
+  the difference between a corrupted branch and a clean restore.</p>
+</div>
+
+<h2>Check yourself</h2>
+
+<div class="quiz">
+  <p class="quiz-q"><span class="num">Q1</span>You write “never issue DDL” in the system prompt. That instruction is:</p>
+  <ul class="quiz-opts">
+    <li data-correct data-why="A prompt expresses a preference the model usually honours. The dispatcher decides what actually executes. For a correctness requirement you need the guarantee, not the preference — and you want both, since the prompt reduces how often the guard has to fire.">Advisory, and the agent may ignore it</li>
+    <li data-why="Prompts do not constrain tool calls mechanically — nothing stops the model emitting a tool call whose argument violates the instruction.">Binding, since prompts constrain tool calls</li>
+    <li data-why="Sampling settings change how often the model deviates, never whether deviation is possible.">Sufficient, given a low temperature setting</li>
+    <li data-why="Validating at dispatch is strictly stronger — it is the difference between a preference and a guarantee.">Equivalent to validating at dispatch time</li>
+  </ul>
+</div>
+
+<div class="quiz">
+  <p class="quiz-q"><span class="num">Q2</span>A blocklist sees <code>/* harmless */ DROP TABLE t</code> and extracts no keyword. It:</p>
+  <ul class="quiz-opts">
+    <li data-correct data-why="Verified: the leading-keyword regex returns an empty string, the empty string is not on the forbidden list, so the statement passes — and MySQL runs the DROP. Failing open is the defining weakness of blocklists.">Fails open, and the DDL executes</li>
+    <li data-why="That is the allowlist's behaviour. A blocklist only rejects what it recognises.">Fails closed, and the statement rejects</li>
+    <li data-why="No error is raised. The parse quietly yields nothing and the check quietly passes.">Raises an error before any parsing</li>
+    <li data-why="It does not match — the string starts with '/', so the leading-keyword regex never reaches DROP. Comment stripping is what fixes the extraction.">Matches the DROP keyword and blocks</li>
+  </ul>
+</div>
+
+<div class="quiz">
+  <p class="quiz-q"><span class="num">Q3</span>An allowlist sees the same statement and extracts no keyword. It:</p>
+  <ul class="quiz-opts">
+    <li data-correct data-why="The empty string is not in ALLOWED, so it is rejected. The allowlist needs no foresight about what attacks exist — anything it cannot positively identify is refused.">Fails closed, because empty is not allowed</li>
+    <li data-why="An allowlist has no blocklist to miss. It permits only what it recognises.">Fails open, because nothing matched the blocklist</li>
+    <li data-why="Nothing reaches MySQL — the guard runs before execution.">Passes it straight through to MySQL unchanged</li>
+    <li data-why="pymysql never sees it. The rejection happens in your dispatcher, above the driver.">Raises a parse error inside the driver</li>
+  </ul>
+</div>
+
+<div class="quiz">
+  <p class="quiz-q"><span class="num">Q4</span>Why is a substring search for <code>DROP</code> the wrong check?</p>
+  <ul class="quiz-opts">
+    <li data-correct data-why="Verified: INSERT INTO t (a) VALUES ('DROP TABLE customers') is a legitimate statement that a substring blocklist rejects. DBBench tables contain arbitrary text, so this is a real false positive, not a contrived one.">It rejects literals containing the word</li>
+    <li data-why="Case is trivially handled with a case-insensitive match. The literal problem is not.">It misses statements written in lowercase</li>
+    <li data-why="pymysql already rejects multi-statement payloads by default — verified, ProgrammingError 1064. That is a free second layer, though one to verify rather than assume.">It cannot handle multiple chained statements</li>
+    <li data-why="Speed is irrelevant at 40 tasks. Correctness is the whole issue.">It runs too slowly at scale</li>
+  </ul>
+</div>
+
+<div class="quiz">
+  <p class="quiz-q"><span class="num">Q5</span>When the guard rejects a statement, the harness should:</p>
+  <ul class="quiz-opts">
+    <li data-correct data-why="The rejection goes back as a tool result so the agent can try something else, and into runs/<task_id>.jsonl so you can count how often it happened. An agent reaching for DDL is a finding about agent behaviour — and the guard must be identical in both modes, or you have reintroduced the confound from lesson 02.">Return the rejection and log it</li>
+    <li data-why="Aborting throws away the task over a recoverable mistake and inflates the failure rate with harness artifacts.">Abort the task and score zero</li>
+    <li data-why="Silence is the failure mode this whole project is about — the agent proceeds believing something happened that did not.">Silently drop it and continue running</li>
+    <li data-why="Guarding only Mode B changes two variables at once. Lesson 02: the guard must be identical in both modes, and it is free — 0/40 gold labels need DDL.">Apply it only in mode B</li>
+  </ul>
+</div>
+
+<h2>One thing that just invalidated a line in your spec</h2>
+
+<div class="callout warn">
+  <span class="label">Check this before you write the experiment-hygiene section</span>
+  <p><code>CLAUDE.md</code> lists your controls as “same model, same prompts, same task order,
+  same <code>max_steps</code>, same temperature.” On current Claude models
+  <strong><code>temperature</code>, <code>top_p</code> and <code>top_k</code> are no longer
+  accepted</strong> — passing them returns a 400. You cannot hold temperature fixed because you
+  cannot set it at all.</p>
+  <p>The knobs that replace it are <code>output_config={"effort": …}</code> and the
+  <code>thinking</code> setting, and <em>those</em> are what must be identical across Mode A and
+  Mode B. Pin the exact model id and log it per run, as Reference 02 already says. Verify against
+  the tool-use docs for whichever model you actually pin — do not take this from me.</p>
+</div>
+
+<h3>Primary source</h3>
+<p>Read <a href="https://platform.claude.com/docs/en/agents-and-tools/tool-use/overview.md">the
+Claude tool-use overview</a>, specifically the section on tool definitions and the guidance on
+writing descriptions. It is short. The one line worth internalising: descriptions should be
+<strong>prescriptive about when to call the tool</strong>, not merely descriptive of what it does —
+the trigger condition belongs in the tool's own description, not only in your system prompt.</p>
+
+<div class="footer">
+  <h3>Carry forward</h3>
+  <ul class="next-links">
+    <li><a href="../assets/sql_guard.py"><code>assets/sql_guard.py</code></a> — 20 cases, 0/40 gold labels blocked. Lift it into <code>src/dbagent/</code>.</li>
+    <li><a href="../reference/restore-mechanisms.html">Reference 04 — The Four Restore Mechanisms</a> · <a href="../reference/experiment-design-checklist.html">Reference 02 — Experiment Design Checklist</a></li>
+    <li>Next up: the trace. What <code>runs/&lt;task_id&gt;.jsonl</code> has to record so it can answer “which task did checkpointing rescue?” — the question aggregates cannot answer.</li>
+  </ul>
+
+  <div class="ask">
+    <span class="label">Ask your teacher</span>
+    <p>The contestable claim here is the allowlist's <em>contents</em>. I included
+    <code>DELETE</code> so a branch can correct itself, and the read verbs so the agent can inspect
+    state mid-branch — both are judgment calls I made, not results. If you think a modification
+    agent has no business issuing <code>DELETE</code>, argue it. Every verb you allow is a claim
+    about what exploration requires.</p>
+  </div>
+</div>
+
+<script src="../assets/quiz.js"></script>

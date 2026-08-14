@@ -127,7 +127,44 @@ exception is LR 0003 (placebo), where the reasoning was the strong part. Since t
 graded on *approach*, the justification is the graded artifact — say that directly rather than
 just supplying the missing reasons.
 
-## Lesson 04 — planned
+## Lesson 04 — shipped
+
+One concept only, per the pacing rules: **the tool boundary is the only enforcement point**. Led
+with the analogy (system prompt = documentation, dispatcher = input validation) before any code.
+Probed the design against live MySQL before writing — every claim in the lesson is a verified
+result, not a design intention:
+
+| probe | result |
+|---|---|
+| gold-label leading verbs | INSERT ×20, UPDATE ×20 — allowlist is non-binding |
+| `pymysql` multi-statement | rejected by driver, `ProgrammingError 1064` — free second layer |
+| substring blocklist vs `INSERT … VALUES ('DROP TABLE x')` | **false positive** — kills the naive approach |
+| leading-keyword, no comment stripping, on `/* c */ DROP TABLE t` | extracts `''` |
+| → under a **blocklist** | **fails open**, MySQL runs the DROP |
+| → under an **allowlist** | **fails closed** |
+| end-to-end guarded vs unguarded | unguarded: rollback FAILED, `'tentative'` · guarded: rollback succeeded, `'original'` |
+
+The allowlist-vs-blocklist asymmetry is the sharpest thing in the lesson and it lands personally:
+an allowlist is the *structural* fix for Yash's recorded weakness of under-enumerating categories
+([[learning-records/0002-ddl-guard-is-necessary-but-not-sufficient.md]]) — it doesn't require
+thinking of everything. Said so explicitly in the lesson.
+
+`assets/sql_guard.py` — 20/20 cases, 0/40 gold labels blocked, written to be lifted into
+`src/dbagent/`.
+
+**Loaded the `claude-api` skill** rather than writing tool definitions from memory. Two payoffs:
+Anthropic's agent-design guidance names **reversibility** as the criterion for promoting an action
+to a dedicated tool — the project's thesis arriving from the other direction, worth a line in the
+write-up. And it surfaced a live error in `CLAUDE.md`.
+
+**Correction to `CLAUDE.md` § Experiment hygiene:** the controls list says "same temperature," but
+`temperature`/`top_p`/`top_k` are no longer accepted on current Claude models — they return a 400.
+Temperature cannot be held fixed because it cannot be set. Replacements are
+`output_config={"effort": …}` and the `thinking` setting. Flagged in Lesson 04 and Reference 05,
+with an instruction to verify against the docs for whichever model he pins. **`CLAUDE.md` itself is
+his file on `main` — do not edit it; he decides.**
+
+## Lesson 05 — planned
 
 The agent loop: tool schemas that make branching legible in the trace, and logging that can
 answer "which task did checkpointing rescue?" Natural follow-on — lesson 03 established that

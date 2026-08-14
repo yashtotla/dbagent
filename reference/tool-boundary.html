@@ -1,0 +1,153 @@
+<title>Reference — The Tool Boundary</title>
+<link rel="stylesheet" href="../assets/lesson.css">
+
+<p class="eyebrow">dbagent · reference 05</p>
+<h1>The Tool Boundary</h1>
+<p class="standfirst">The dispatcher is the only place a correctness constraint can be enforced.
+This is the implementation-section material for the write-up.</p>
+
+<h2>1 · The rule</h2>
+
+<p>The agent reaches the database only through a tool call you dispatch. Therefore:</p>
+
+<div class="table-wrap">
+<table>
+  <thead><tr><th></th><th>System prompt</th><th>Tool dispatcher</th></tr></thead>
+  <tbody>
+    <tr><td>Analogous to</td><td>Documentation</td><td>Input validation</td></tr>
+    <tr><td>Force</td><td>Advisory — may be ignored</td><td>Mandatory — you decide what runs</td></tr>
+    <tr><td>Use for</td><td>Reducing how often the guard fires</td><td>Guaranteeing it never doesn't</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p>Write the constraint in <strong>both</strong> places. The prompt lowers the rejection rate; the
+dispatcher makes the rejection rate irrelevant to correctness.</p>
+
+<h2>2 · Allowlist, never blocklist</h2>
+
+<div class="table-wrap">
+<table>
+  <thead><tr><th>Input</th><th>Verb extracted</th><th>Blocklist</th><th>Allowlist</th></tr></thead>
+  <tbody>
+    <tr><td><code>DROP TABLE t</code></td><td><code>DROP</code></td><td>reject ✓</td><td>reject ✓</td></tr>
+    <tr><td><code>INSERT … VALUES ('DROP TABLE x')</code></td><td><code>INSERT</code></td>
+        <td><strong>reject ✗</strong> false positive</td><td>allow ✓</td></tr>
+    <tr><td><code>/* c */ DROP TABLE t</code></td><td><code>''</code></td>
+        <td><strong>allow ✗ fails open</strong></td><td>reject ✓ fails closed</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p>A blocklist requires enumerating every dangerous statement — miss one and it fails open. An
+allowlist requires enumerating only what the task needs, and refuses anything it cannot positively
+identify.</p>
+
+<pre><code>ALLOWED = {"SELECT", "INSERT", "UPDATE", "DELETE",
+           "SHOW", "DESCRIBE", "DESC", "EXPLAIN"}</code></pre>
+
+<p><strong>Strip comments before extracting the verb.</strong> Without it,
+<code>/* c */ DROP TABLE t</code> yields no keyword at all.</p>
+
+<p><strong>Verified free:</strong> 0/40 gold <code>label</code> statements are blocked. All 40 are
+single statements, 20 <code>INSERT</code> and 20 <code>UPDATE</code>.</p>
+
+<h2>3 · What the guard rejects, and why</h2>
+
+<div class="table-wrap">
+<table>
+  <thead><tr><th>Category</th><th>Examples</th><th>Why it must be rejected</th></tr></thead>
+  <tbody>
+    <tr><td>DDL</td><td><code>CREATE</code>, <code>ALTER</code>, <code>DROP</code>,
+        <code>TRUNCATE</code>, <code>RENAME</code></td>
+        <td>Implicit commit destroys the savepoint <em>silently</em></td></tr>
+    <tr><td>Transaction control</td><td><code>COMMIT</code>, <code>ROLLBACK</code>,
+        <code>BEGIN</code>, <code>START TRANSACTION</code>, <code>SAVEPOINT</code>,
+        <code>RELEASE</code></td>
+        <td>Deletes savepoints directly, or implicitly commits first. The harness owns these.</td></tr>
+    <tr><td>Session state</td><td><code>SET</code>, <code>LOCK</code>, <code>UNLOCK</code>,
+        <code>USE</code></td>
+        <td><code>SET autocommit=1</code> and <code>LOCK TABLES</code> implicitly commit</td></tr>
+    <tr><td>Unparseable</td><td>empty input, comment-only</td>
+        <td>Fails closed by construction</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p><strong>Free second layer:</strong> <code>pymysql</code> rejects multi-statement payloads by
+default — <code>UPDATE t SET a='x'; DROP TABLE t</code> raises
+<code>ProgrammingError (1064)</code>. Verified, but verify it yourself rather than assuming: it
+disappears the moment anyone passes <code>CLIENT.MULTI_STATEMENTS</code>.</p>
+
+<h2>4 · The rejection protocol</h2>
+
+<ol>
+  <li><strong>Return the reason to the agent</strong> as a tool result. It can then try something
+      else — a rejection costs a step, not the task.</li>
+  <li><strong>Log it</strong> to <code>runs/&lt;task_id&gt;.jsonl</code>. An agent reaching for DDL
+      is a finding about agent behaviour, not a harness failure.</li>
+  <li><strong>Never abort</strong> the task, and <strong>never drop silently</strong> — silence is
+      the exact failure mode the project exists to study.</li>
+  <li><strong>Identical guard in both modes.</strong> Guarding only Mode B changes two variables
+      at once. See <a href="experiment-design-checklist.html">Reference 02</a>.</li>
+</ol>
+
+<h2>5 · Tool definition shape</h2>
+
+<pre><code>{
+  "name": "execute_sql",
+  "description": "Run one SQL statement … Only SELECT, INSERT, UPDATE, DELETE, "
+                 "SHOW, DESCRIBE and EXPLAIN are permitted — DDL and transaction-"
+                 "control statements are rejected by the harness.",
+  "strict": True,
+  "input_schema": {
+    "type": "object",
+    "properties": {"sql": {"type": "string", "description": "A single SQL statement."}},
+    "required": ["sql"],
+    "additionalProperties": False,
+  },
+}</code></pre>
+
+<ul>
+  <li><strong>Be prescriptive about <em>when</em> to call it</strong>, not just what it does. The
+      trigger condition belongs in the tool's own description, not only the system prompt.</li>
+  <li><code>strict: True</code> guarantees the input validates against the schema. It requires
+      <code>additionalProperties: False</code> and an explicit <code>required</code> list.</li>
+  <li>State the guard in the description too — the agent then avoids the rejection rather than
+      discovering it.</li>
+</ul>
+
+<div class="callout warn">
+  <span class="label">Correction to CLAUDE.md § Experiment hygiene</span>
+  <p>The controls list says “same temperature.” On current Claude models <code>temperature</code>,
+  <code>top_p</code> and <code>top_k</code> are <strong>no longer accepted</strong> — passing them
+  returns a 400. Temperature cannot be held fixed because it cannot be set.</p>
+  <p>The replacements are <code>output_config={"effort": …}</code> and the <code>thinking</code>
+  setting; those are what must be identical across modes. Pin the exact model id and log it per
+  run. Verify against the current tool-use docs for whichever model you pin.</p>
+</div>
+
+<h2>6 · Why this is a research point, not plumbing</h2>
+
+<p>Anthropic's own agent-design guidance says a <strong>bash tool</strong> gives the harness only
+an opaque command string, whereas promoting an action to a <strong>dedicated tool</strong> gives it
+“an action-specific hook with typed arguments it can intercept, gate, render, or audit” — and names
+the criterion for doing so:</p>
+
+<blockquote>
+  <p>“Reversibility is a useful criterion: hard-to-reverse actions … can be gated behind user
+  confirmation.”</p>
+</blockquote>
+
+<p>The tool-design literature already treats <em>irreversibility</em> as what decides where a
+boundary goes. This project measures what changes when the action becomes reversible instead —
+the same idea approached from the other side. That connection belongs in the write-up.</p>
+
+<div class="footer">
+  <h3>Related</h3>
+  <ul class="next-links">
+    <li><a href="../lessons/0004-the-tool-boundary.html">Lesson 04 — The tool boundary</a></li>
+    <li><a href="../assets/sql_guard.py"><code>assets/sql_guard.py</code></a></li>
+    <li><a href="mysql-transaction-boundaries.html">Reference 01</a> · <a href="experiment-design-checklist.html">Reference 02</a> · <a href="restore-cost.html">Reference 03</a> · <a href="restore-mechanisms.html">Reference 04</a></li>
+  </ul>
+</div>
