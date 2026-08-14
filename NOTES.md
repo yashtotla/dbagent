@@ -354,6 +354,39 @@ experiment's evidence and the named recovery cases are quoted from them. Note it
 `claude/teach` rather than `main`, which breaks the branch convention slightly — it'll carry over on
 merge; offered to move it.
 
+### Lesson 06 — refuted and rewritten, same session
+
+Yash cut the six exit paths to three (happy / exception / max-turns) with **no recovery at all**,
+and asked how an incomplete task gets scored. Both moves were right.
+
+**The design was built for the wrong phase.** Graceful degradation is for an unattended production
+run; this is 40 tasks with him watching, where it converts bugs into data points — the exact failure
+lesson 05 warned about, rebuilt into the harness one lesson later. Debugging posture: crash loudly,
+every non-happy exit is fixable. Measurement posture comes later and **cannot be designed first**,
+because which failures are irreducible isn't known yet.
+
+**His question dissolves, and that became the lesson's spine.** The scorer is one `SELECT` hashing
+rows — it cannot tell whether an agent ran, finished, or used thirty turns. There is no
+"scoring an incomplete task" rule; there's only what's on the table when you hash it, and on
+outcomes 2 and 3 you never get there. *You don't score tasks, you hash tables.* The whole
+"COMMIT don't roll back at max_steps" section went with it.
+
+Kept: `strict=True` by default so the agent's own bad SQL also raises (broken SQL during development
+usually means the prompt is wrong); flip to `strict=False` once clean. **Capture maximally, handle
+minimally** — the trace is still written up to the crash, which is how debugging works.
+
+**Pacing failure too.** He said "there is a lot I don't understand" — lesson 06 shipped with four
+concepts against a rule of one. Rewrite is ~8 min, one idea. The rule keeps breaking on
+assembly-shaped lessons; fix is to find the spine first and cut whatever doesn't hang off it.
+
+See [[learning-records/0010-crash-early-and-scoring-dissolved.md]].
+
+**Third instance of the same pattern** ([[learning-records/0003-placebo-control-refuted.md]],
+[[learning-records/0009-capture-everything-derive-narrowly.md]], this): each time I traded contact
+with observable reality for a cleaner pre-specified structure. **The tell:** a design that starts
+enumerating categories of failure and assigning each a handler — that's the moment to ask whether
+the categories are known yet.
+
 ## Lesson 07 — probably not needed
 
 The agent loop: tool schemas that make branching legible in the trace, and logging that can

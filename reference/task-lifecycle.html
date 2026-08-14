@@ -27,41 +27,44 @@ that decides the experiment is at a boundary.</p>
 <p><em>Mode A</em> has no explicit transaction: autocommit is on and every statement commits as it
 runs. That asymmetry <strong>is</strong> the variable under study.</p>
 
-<h2>2 · Exit paths</h2>
+<h2>2 · Three outcomes</h2>
 
 <div class="table-wrap">
 <table>
-  <thead><tr><th>Exit</th><th>Handling</th><th>Scored?</th></tr></thead>
+  <thead><tr><th>#</th><th>Outcome</th><th>What happens</th></tr></thead>
   <tbody>
-    <tr><td><code>commit_final_answer</code></td><td>Commit, score</td><td>✓</td></tr>
-    <tr><td><code>max_steps</code></td><td><strong>COMMIT, do not roll back</strong></td><td>✓</td></tr>
-    <tr><td><code>stop_reason: max_tokens</code></td><td>Harness artifact — exclude, report separately</td><td>✗</td></tr>
-    <tr><td><code>stop_reason: refusal</code></td><td>Harness artifact — exclude</td><td>✗</td></tr>
-    <tr><td><code>end_turn</code>, no tool call</td><td>Reprompt <strong>once</strong>, then stop</td><td>✗</td></tr>
-    <tr><td>exception</td><td><code>complete: false</code> — never score as a failure</td><td>✗</td></tr>
+    <tr><td>1</td><td><code>commit_final_answer</code></td><td>Hash the table, compare, record</td></tr>
+    <tr><td>2</td><td>anything unexpected</td><td><strong>Raise.</strong> Stop the process, read the trace, fix</td></tr>
+    <tr><td>3</td><td><code>max_steps</code> without committing</td><td><strong>Raise.</strong> Stop, read the trace</td></tr>
   </tbody>
 </table>
 </div>
 
+<p>No fourth bucket, no excluded-artifact set, no partial credit. Every non-happy path during
+development is a bug you can still fix, and a harness that keeps going is a harness that hides them.</p>
+
 <div class="callout warn">
-  <span class="label">The two that are decisions, not mechanics</span>
-  <p><strong><code>max_steps</code> → commit.</strong> Mode A's partial work is already committed —
-  that is what Mode A <em>is</em>. Rolling back Mode B's gives partial credit to one arm and zero to
-  the other for identical behaviour. Scoring the uncommitted state on the same connection then
-  rolling back is equivalent; pick one, state it, apply to both arms.</p>
-  <p><strong><code>end_turn</code> → never spin.</strong> A loop that re-requests burns the whole
-  budget at ~2 s and real tokens per empty turn. It never appears in testing and appears eventually
-  across 40 tasks.</p>
+  <span class="label">Two postures — only one is designable now</span>
+  <p><strong>Debugging (now):</strong> crash loudly on anything but <code>tool_use</code>.
+  <strong>Measurement (later):</strong> tolerate whatever survived fixing. You cannot design the
+  second first, because you don't yet know which failures are irreducible.</p>
+  <p><code>strict=True</code> (default) also raises on the agent's own SQL errors — broken SQL
+  usually means the prompt or tool description is wrong. Flip to <code>strict=False</code> once the
+  run is clean, and bad SQL becomes an ordinary tool result the agent reacts to.</p>
 </div>
 
-<p><strong>Report the excluded set alongside the result.</strong> A silent exclusion is the same
-failure as a silent inclusion (<a href="trace-schema.html">Ref 06</a>).</p>
+<div class="callout check">
+  <span class="label">There is no “scoring an incomplete task”</span>
+  <p>The scorer is one <code>SELECT</code> hashing rows. It does not know an agent exists, whether
+  it finished, or how many turns it took. So the only question is <em>what is on the table when we
+  hash it</em> — and on outcomes 2 and 3 you never get there, because you stopped to look.</p>
+</div>
 
 <h2>3 · Request shape</h2>
 
 <pre><code>client.messages.create(
     model="claude-opus-5",            <span class="cmt"># pin exactly; log it in the header</span>
-    max_tokens=4096,
+    max_tokens=8192,
     system=system_for(mode),
     tools=tools_for(mode),
     tool_choice={"type": "auto", <span class="ok">"disable_parallel_tool_use": True</span>},
@@ -95,18 +98,19 @@ failure as a silent inclusion (<a href="trace-schema.html">Ref 06</a>).</p>
 <ol>
   <li><code>uv run python assets/milestone0.py</code> → <strong>40/40</strong>. If not, stop.</li>
   <li><code>uv run python assets/sql_guard.py</code> → 20/20, 0/40 gold labels blocked.</li>
-  <li><code>uv run python assets/agent_loop.py</code> → all six exit paths, no API calls.</li>
+  <li><code>uv run python assets/agent_loop.py</code> → all three outcomes, no API calls.</li>
   <li><code>uv run python assets/trace.py</code> → analysis runs end-to-end on synthetic data.</li>
   <li>Pick <code>max_steps</code>: size it for Mode B (~10 turns for a 3-alternative exploration),
       use the same number in Mode A, and report turns actually used — that comparison <em>is</em>
       the policy-change measurement.</li>
+  <li>Run with <code>strict=True</code> and fix whatever stops the process until nothing does.</li>
   <li>Confirm <code>check_controls()</code> reports <code>stable</code> per mode after the run.</li>
 </ol>
 
 <div class="footer">
   <h3>Related</h3>
   <ul class="next-links">
-    <li><a href="../lessons/0006-the-boundaries-are-the-experiment.html">Lesson 06 — The loop is trivial; the boundaries are the experiment</a></li>
+    <li><a href="../lessons/0006-the-boundaries-are-the-experiment.html">Lesson 06 — The scorer doesn't know the agent exists</a></li>
     <li><a href="../assets/agent_loop.py"><code>assets/agent_loop.py</code></a></li>
     <li><a href="experiment-design-checklist.html">Ref 02</a> · <a href="tool-boundary.html">Ref 05</a> · <a href="trace-schema.html">Ref 06</a></li>
   </ul>
