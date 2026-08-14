@@ -1,0 +1,245 @@
+<title>Lesson 01 — Can a savepoint survive your agent loop?</title>
+<link rel="stylesheet" href="../assets/lesson.css">
+
+<p class="eyebrow">dbagent · lesson 01 · ~12 minutes</p>
+<h1>Can a savepoint survive your agent loop?</h1>
+<p class="standfirst">Your spec lists <code>SAVEPOINT</code> as the cheapest candidate for Mode B
+and flags its limits as “worth measuring rather than assuming.” This lesson settles one of
+them, by making a savepoint die in front of you.</p>
+
+<h2>Why this one first</h2>
+
+<p>Mode B needs a checkpoint mechanism, and you have four candidates. The choice is not a
+detail — it decides what your write-up can claim. If <code>SAVEPOINT</code> works, restore is
+a sub-millisecond undo-log walk and you have a genuinely sharp result to report against the
+seconds-scale generic mechanisms Xu et al. benchmarked. If it silently fails under your
+agent’s traffic, every Mode B number you produce is a measurement of a bug.</p>
+
+<p>So: <strong>under what conditions does a savepoint survive an agent’s exploration
+branch?</strong> That is a small, answerable question, and answering it unblocks the design.</p>
+
+<div class="recall">
+  <span class="label">Before you read on — retrieval practice</span>
+  <p>From memory, no scrolling: list every event you think destroys an open savepoint in
+  MySQL. Give yourself thirty seconds.</p>
+  <details>
+    <summary>Now compare</summary>
+    <p>There are four. Most people get the first and miss the rest. The one that will
+    actually break your agent is <strong>#2</strong> — and it fails <em>silently</em>.</p>
+  </details>
+</div>
+
+<h2>The contract, in four lines</h2>
+
+<p>The whole of <code>SAVEPOINT</code>’s guarantee, quoted from the manual:</p>
+
+<blockquote>
+  <p>“All savepoints of the current transaction are deleted if you execute a <code>COMMIT</code>,
+  or a <code>ROLLBACK</code> that does not name a savepoint.”</p>
+  <p>“Savepoints that were set at a later time than the named savepoint are deleted.”</p>
+  <p>“If the current transaction has a savepoint with the same name, the old savepoint is
+  deleted and a new one is set.”</p>
+  <p>“Modifications that the current transaction made to rows after the savepoint was set are
+  undone in the rollback, but <code>InnoDB</code> does <em>not</em> release the row locks…”</p>
+</blockquote>
+
+<p class="cite">All four: <a href="https://dev.mysql.com/doc/refman/8.0/en/savepoint.html">MySQL
+8.0 Reference Manual §15.3.4</a>.</p>
+
+<p>Notice what is <em>not</em> in that list: DDL. That omission is the trap, and it lives in a
+different chapter of the manual — which is exactly why people miss it.</p>
+
+<div class="callout warn">
+  <span class="label">The silent killer</span>
+  <p>DDL statements — <code>CREATE TABLE</code>, <code>ALTER TABLE</code>,
+  <code>DROP TABLE</code>, <code>CREATE INDEX</code>, <code>TRUNCATE TABLE</code> — “implicitly
+  end any transaction active in the current session, as if you had done a <code>COMMIT</code>
+  before executing the statement.” No warning. No error. Your speculative write is now
+  permanent, and the <code>ROLLBACK</code> that was supposed to undo it fails.</p>
+  <p class="cite" style="margin-bottom:0"><a href="https://dev.mysql.com/doc/refman/8.0/en/implicit-commit.html">MySQL
+  8.0 Reference Manual §15.3.3</a></p>
+</div>
+
+<h2>Watch it die</h2>
+
+<p>Docker is running on your machine but <code>dbbench-mysql</code> does not exist yet. Start it
+— this is your Milestone 0 container anyway:</p>
+
+<pre><code>docker run -d --name dbbench-mysql -p 3306:3306 \
+  -e MYSQL_ROOT_PASSWORD=pw mysql:8
+
+<span class="cmt"># wait ~20s for first-time init, then check:</span>
+docker exec dbbench-mysql mysqladmin -uroot -ppw ping</code></pre>
+
+<p>Now run both branches. Identical, except branch A slips one DDL statement into the middle
+— exactly what an agent does when it decides an index would help:</p>
+
+<pre><code>docker exec -i dbbench-mysql mysql -uroot -ppw --force &lt;&lt;'SQL'
+DROP DATABASE IF EXISTS lab; CREATE DATABASE lab; USE lab;
+CREATE TABLE t (a TEXT); INSERT INTO t VALUES ('original');
+
+SELECT '=== BRANCH A: agent issues DDL mid-branch ===' AS '';
+START TRANSACTION;
+SAVEPOINT sp1;
+UPDATE t SET a = 'tentative';
+CREATE INDEX idx ON t (a(10));       <span class="cmt">-- implicit COMMIT fires HERE</span>
+ROLLBACK TO SAVEPOINT sp1;
+SELECT a AS after_rollback_A FROM t;
+
+DROP DATABASE lab; CREATE DATABASE lab; USE lab;
+CREATE TABLE t (a TEXT); INSERT INTO t VALUES ('original');
+
+SELECT '=== BRANCH B: identical, no DDL ===' AS '';
+START TRANSACTION;
+SAVEPOINT sp1;
+UPDATE t SET a = 'tentative';
+ROLLBACK TO SAVEPOINT sp1;
+SELECT a AS after_rollback_B FROM t;
+SQL</code></pre>
+
+<p>Verified output — this is a real run, not an illustration. The error arrives on stderr, so it
+surfaces before the result rows rather than in sequence with them:</p>
+
+<pre><code><span class="hit">ERROR 1305 (42000) at line 9: SAVEPOINT sp1 does not exist</span>
+
+=== BRANCH A: agent issues DDL mid-branch ===
+after_rollback_A
+<span class="hit">tentative</span>          <span class="cmt">&lt;- the speculative write COMMITTED. Unrecoverable.</span>
+
+=== BRANCH B: identical, no DDL ===
+after_rollback_B
+<span class="ok">original</span>           <span class="cmt">&lt;- restored, sub-millisecond</span></code></pre>
+
+<div class="callout">
+  <span class="label">Version note</span>
+  <p>The <code>mysql:8</code> tag now resolves to <strong>8.4.11</strong>, not 8.0 — worth
+  pinning explicitly in your write-up’s methods section. Defaults confirmed on the running
+  container: <code>transaction_isolation = REPEATABLE-READ</code>, <code>autocommit = 1</code>.
+  The savepoint and implicit-commit semantics above are identical across 8.0 and 8.4; the
+  manual links cite 8.0, and the behaviour was reproduced on 8.4.11.</p>
+</div>
+
+<div class="callout check">
+  <span class="label">The result</span>
+  <p>Branch A is <strong>Mode A behaviour occurring inside Mode B</strong>. The agent believed
+  it was exploring safely; the harness reported no error until the rollback, by which point the
+  write was already durable. An agent that hits this doesn’t just fail the task — it fails it
+  while your logs claim checkpointing was enabled.</p>
+</div>
+
+<h2>Check yourself</h2>
+
+<div class="quiz">
+  <p class="quiz-q"><span class="num">Q1</span>Mid-branch, your agent emits <code>CREATE INDEX</code>. What happens to <code>sp1</code>?</p>
+  <ul class="quiz-opts">
+    <li data-correct data-why="DDL implicitly commits before it executes, which deletes every savepoint in the session. Nothing is raised at that moment — the failure only surfaces later, at the rollback.">It is silently destroyed forever</li>
+    <li data-why="Savepoints do not survive DDL. The implicit commit deletes all of them.">It survives the statement unchanged</li>
+    <li data-why="Nothing blocks. The DDL runs immediately and commits the open transaction as it goes.">It blocks until branch resolves</li>
+    <li data-why="No error at the DDL. That is what makes this dangerous — error 1305 only appears later, at the ROLLBACK.">It raises an immediate error</li>
+  </ul>
+</div>
+
+<div class="quiz">
+  <p class="quiz-q"><span class="num">Q2</span>You set <code>sp1</code>, then <code>sp2</code>, then run <code>ROLLBACK TO SAVEPOINT sp1</code>. What happens to <code>sp2</code>?</p>
+  <ul class="quiz-opts">
+    <li data-correct data-why="“Savepoints that were set at a later time than the named savepoint are deleted.” sp1 itself survives and can be rolled back to again — so a depth-indexed naming scheme works, but only downward.">It is deleted by MySQL</li>
+    <li data-why="Newer savepoints are discarded by the rollback. Only sp1 and anything older remains.">It is kept for reuse</li>
+    <li data-why="There is no merge semantics. Savepoints form a stack that truncates on rollback.">It is merged into sp1</li>
+    <li data-why="Nothing is promoted. sp2 is simply gone.">It is promoted to current</li>
+  </ul>
+</div>
+
+<div class="quiz">
+  <p class="quiz-q"><span class="num">Q3</span>A second connection runs a plain <code>SELECT</code> while your branch holds uncommitted writes. It sees:</p>
+  <ul class="quiz-opts">
+    <li data-correct data-why="Under the default REPEATABLE READ, InnoDB reconstructs the pre-branch version from the undo log via each row's roll pointer. Speculative state is invisible outside the writing session — which is why a scorer on a second connection would read the wrong answer.">The original pre-branch table state</li>
+    <li data-why="Uncommitted writes are private to the writing session. Seeing them would be a dirty read, which REPEATABLE READ does not permit.">The agent's tentative uncommitted writes</li>
+    <li data-why="Reads are not blocked by row locks under MVCC — that is the entire point of multi-versioning. A write to those rows would block.">An error about locked rows</li>
+    <li data-why="A consistent read does not block. It reconstructs an older row version instead of waiting.">A blocked query until commit</li>
+  </ul>
+</div>
+
+<div class="quiz">
+  <p class="quiz-q"><span class="num">Q4</span><code>pymysql</code> reconnects mid-branch. Your savepoint and transaction are:</p>
+  <ul class="quiz-opts">
+    <li data-correct data-why="Savepoints are session-scoped. Losing the connection rolls the whole transaction back — so a connection pool that hands out a different connection mid-task silently destroys the branch. Hold one connection per task.">Gone, and the transaction rolled back</li>
+    <li data-why="Neither survives a reconnect. The new session knows nothing of the old transaction.">Kept, and the transaction still open</li>
+    <li data-why="The transaction does not survive either — the server rolls it back when the session drops.">Gone, but the transaction still open</li>
+    <li data-why="Savepoints are session-scoped and cannot outlive the connection that created them.">Kept, but the transaction rolled back</li>
+  </ul>
+</div>
+
+<div class="quiz">
+  <p class="quiz-q"><span class="num">Q5</span>For <code>SAVEPOINT</code> to work as Mode B’s mechanism, each task’s <code>CREATE TABLE</code> must run:</p>
+  <ul class="quiz-opts">
+    <li data-correct data-why="Table setup is DDL, so it must complete before START TRANSACTION. Sequence: create database, create table, insert rows, START TRANSACTION, then hand control to the agent.">Before the transaction is opened</li>
+    <li data-why="That is the failure you just reproduced — DDL inside the branch commits everything before it.">Inside the agent's exploration branch</li>
+    <li data-why="Any DDL after the savepoint destroys it, regardless of how soon it follows.">Right after the first savepoint</li>
+    <li data-why="Anywhere inside the transaction is too late. It must precede START TRANSACTION entirely.">Between two consecutive agent steps</li>
+  </ul>
+</div>
+
+<h2>The research move</h2>
+
+<p>You now have a mechanism-level fact. Here is how it becomes a research-level one — which is
+what the second half of your mission is about.</p>
+
+<p>Q3 is not trivia. “What other actors should observe while one agent is branching
+speculatively” is <strong>open challenge #1</strong> in Xu et al. — they name it <em>fork
+semantics</em> and pose it as unresolved. MySQL has already picked an answer: conservative.
+Hide all tentative state, hold the row locks, make readers reconstruct the old version.</p>
+
+<p>That reframes your write-up. Rather than “I added undo to an agent,” you can write: <em>the
+generic mechanisms the paper benchmarks leave fork semantics undefined, whereas an engine-native
+primitive inherits a fully specified answer from the isolation level — for free, and three to six
+orders of magnitude faster.</em> That is a claim with a mechanism behind it, and you can
+demonstrate the whole thing on a laptop.</p>
+
+<p>It also sharpens the open question your spec deliberately left unresolved — plain two-mode
+comparison versus an argument about native forking. The evidence is starting to favour the
+second. Not yet decided; that is your call, and it should be made with numbers in hand.</p>
+
+<h2>Before the next lesson</h2>
+
+<div class="callout warn">
+  <span class="label">One claim I could not verify</span>
+  <p>Your <code>CLAUDE.md</code> asserts that AgentBench’s <code>MySQLDatabase.execute</code>
+  calls <code>conn.commit()</code> after <em>every</em> statement, and concludes that
+  “the irreversibility is a harness decision, not a MySQL constraint.” That conclusion is the
+  premise of your entire project.</p>
+  <p>I confirmed the surrounding code (all columns created <code>TEXT</code>, backticked
+  identifiers, <code>CREATE TABLE IF NOT EXISTS</code>) but the commit behaviour lives in an
+  <code>interaction</code> module I could not reach. <strong>Clone the repo and read it
+  yourself.</strong> A premise you have not seen with your own eyes is the most expensive kind
+  of assumption in a write-up whose reviewer knows the field.</p>
+</div>
+
+<p>Everything else in <code>CLAUDE.md</code> I did check, and it holds: 40 modification tasks
+(20 <code>INSERT</code>, 20 <code>UPDATE</code>), gold SQL in <code>label</code> with
+<code>sql</code> absent on all 40, <code>answer_md5</code> as a Python repr string, spaces in
+identifiers. The paper’s three restoration primitives are named as you described them.</p>
+
+<h3>Primary source</h3>
+<p>Read <a href="https://dev.mysql.com/doc/refman/8.0/en/implicit-commit.html">MySQL 8.0
+Reference Manual §15.3.3, “Statements That Cause an Implicit Commit”</a>. It is one page.
+Read the full list once now and you will recognise the failure mode instantly for the rest of
+your career — it recurs in every ORM, migration tool, and transactional test harness you will
+ever touch.</p>
+
+<div class="footer">
+  <h3>Carry forward</h3>
+  <ul class="next-links">
+    <li><a href="../reference/mysql-transaction-boundaries.html">Reference 01 — MySQL Transaction Boundaries</a> (the compressed version; print this one)</li>
+    <li>Next up: designing the Mode A / Mode B comparison so its numbers survive a reviewer — controls, confounds, and what N=40 on one benchmark cannot support.</li>
+  </ul>
+
+  <div class="ask">
+    <span class="label">Ask your teacher</span>
+    <p>I’m your teacher for this, not just the author of the page. If any of it was too fast,
+    too slow, or you want the <em>why</em> underneath — undo logs, why locks outlive a partial
+    rollback, whether replay-prefix beats savepoints for your case — just ask in the session.
+    Push back if you disagree; the disagreements are where the write-up gets good.</p>
+  </div>
+</div>
+
+<script src="../assets/quiz.js"></script>

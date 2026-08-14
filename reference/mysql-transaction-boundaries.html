@@ -1,0 +1,172 @@
+<title>Reference — MySQL Transaction Boundaries</title>
+<link rel="stylesheet" href="../assets/lesson.css">
+
+<p class="eyebrow">dbagent · reference 01</p>
+<h1>MySQL Transaction Boundaries</h1>
+<p class="standfirst">What a savepoint promises, what silently destroys it, and who can see a
+speculative branch. Every claim here is quoted from the MySQL 8.0 manual — check the
+citation before you trust me.</p>
+
+<h2>1 · The savepoint contract</h2>
+
+<p>Four normative statements from the manual. These are the whole surface.</p>
+
+<div class="table-wrap">
+<table>
+  <thead><tr><th>Rule</th><th>Manual wording (verbatim)</th></tr></thead>
+  <tbody>
+    <tr>
+      <td><strong>COMMIT or bare ROLLBACK wipes every savepoint</strong></td>
+      <td>“All savepoints of the current transaction are deleted if you execute a
+      <code>COMMIT</code>, or a <code>ROLLBACK</code> that does not name a savepoint.”</td>
+    </tr>
+    <tr>
+      <td><strong>Reusing a name replaces, it does not nest</strong></td>
+      <td>“If the current transaction has a savepoint with the same name, the old savepoint
+      is deleted and a new one is set.”</td>
+    </tr>
+    <tr>
+      <td><strong>Rolling back to a savepoint deletes newer ones</strong></td>
+      <td>“Savepoints that were set at a later time than the named savepoint are deleted.”</td>
+    </tr>
+    <tr>
+      <td><strong>Rollback undoes rows but keeps locks</strong></td>
+      <td>“Modifications that the current transaction made to rows after the savepoint was
+      set are undone in the rollback, but <code>InnoDB</code> does <em>not</em> release the
+      row locks that were stored in memory after the savepoint.”</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+<p>Missing savepoint raises <code>ERROR 1305 (42000): SAVEPOINT identifier does not exist</code>.</p>
+
+<p class="cite">Source: <a href="https://dev.mysql.com/doc/refman/8.0/en/savepoint.html">MySQL 8.0
+Reference Manual §15.3.4 — SAVEPOINT, ROLLBACK TO SAVEPOINT, and RELEASE SAVEPOINT</a></p>
+
+<h2>2 · The four ways a savepoint dies</h2>
+
+<p>Only the first is obvious. The other three are what will actually bite an agent loop.</p>
+
+<div class="table-wrap">
+<table>
+  <thead><tr><th>#</th><th>Cause</th><th>Warning you get</th><th>Reachable in dbagent?</th></tr></thead>
+  <tbody>
+    <tr><td>1</td><td>Explicit <code>COMMIT</code> / bare <code>ROLLBACK</code></td>
+        <td>None — intended</td><td>Yes, harness-controlled</td></tr>
+    <tr><td>2</td><td><strong>Implicit commit from DDL</strong> — <code>CREATE&nbsp;TABLE</code>,
+        <code>ALTER&nbsp;TABLE</code>, <code>DROP&nbsp;TABLE</code>, <code>CREATE&nbsp;INDEX</code>,
+        <code>TRUNCATE&nbsp;TABLE</code></td>
+        <td><strong>None. Silent.</strong></td>
+        <td><strong>Yes</strong> — agent can emit DDL at will</td></tr>
+    <tr><td>3</td><td>Session ends or reconnects</td>
+        <td>Transaction rolls back wholesale</td>
+        <td>Yes — any <code>pymysql</code> reconnect</td></tr>
+    <tr><td>4</td><td><code>BEGIN</code> / <code>START TRANSACTION</code> / <code>SET autocommit=1</code>
+        / <code>LOCK TABLES</code></td>
+        <td>None — these implicitly commit first</td>
+        <td>Yes, if the agent issues them</td></tr>
+  </tbody>
+</table>
+</div>
+
+<div class="callout warn">
+  <span class="label">The one that matters</span>
+  <p>Cause #2 is the trap. DDL commits the open transaction <em>before</em> it runs, so a
+  speculative <code>UPDATE</code> made earlier in the branch becomes <strong>permanent</strong>
+  — and the subsequent <code>ROLLBACK TO SAVEPOINT</code> fails with error 1305. The agent
+  believes it is exploring safely and is not. This is Mode A behaviour leaking into Mode B.</p>
+</div>
+
+<p><code>TEMPORARY</code> tables are the exception: “<code>CREATE TABLE</code> and
+<code>DROP TABLE</code> statements do not commit a transaction if the <code>TEMPORARY</code>
+keyword is used.”</p>
+
+<p class="cite">Source: <a href="https://dev.mysql.com/doc/refman/8.0/en/implicit-commit.html">MySQL
+8.0 Reference Manual §15.3.3 — Statements That Cause an Implicit Commit</a></p>
+
+<h2>3 · Who sees a speculative branch</h2>
+
+<p>Under InnoDB’s default <code>REPEATABLE READ</code>, uncommitted branch state is private
+to the writing session. Multi-versioning is what makes this true: each row carries a
+<code>DB_TRX_ID</code> (last transaction to touch it) and a <code>DB_ROLL_PTR</code> roll
+pointer into the undo log, so a reader can reconstruct the pre-branch version rather than
+block on it.</p>
+
+<div class="table-wrap">
+<table>
+  <thead><tr><th>Observer</th><th>Plain <code>SELECT</code></th><th>Write to same rows</th></tr></thead>
+  <tbody>
+    <tr><td>The branching session</td><td>Its own tentative writes</td><td>Proceeds</td></tr>
+    <tr><td>Another connection</td><td><strong>Pre-branch state</strong> (undo-log reconstruction)</td>
+        <td><strong>Blocks</strong> — row locks are held</td></tr>
+    <tr><td>The scorer, if it reconnects</td><td>Pre-branch state — <em>wrong answer</em></td><td>—</td></tr>
+  </tbody>
+</table>
+</div>
+
+<div class="callout">
+  <span class="label">Why this is the research question, not a detail</span>
+  <p>“What other actors should observe while one agent is branching speculatively” is open
+  challenge #1 in <a href="https://arxiv.org/abs/2510.05556">Xu et al.</a> — they call it
+  <em>fork semantics</em>. MySQL already answers it one way (conservative: hide everything,
+  hold locks). Naming that as a design point rather than an implementation accident is the
+  difference between a lab report and a research note.</p>
+</div>
+
+<p class="cite">Source: <a href="https://dev.mysql.com/doc/refman/8.0/en/innodb-multi-versioning.html">MySQL
+8.0 Reference Manual §17.3 — InnoDB Multi-Versioning</a></p>
+
+<h2>4 · Measured restore latency, for comparison</h2>
+
+<p>Xu et al. benchmarked six generic snapshot/restore mechanisms across 0–2 GB memory and
+0–2 GB disk. Cite these rather than re-measuring — then measure <em>your</em> mechanism and
+show where it lands.</p>
+
+<div class="table-wrap">
+<table>
+  <thead><tr><th>Mechanism</th><th>Restore latency</th><th>Covers</th></tr></thead>
+  <tbody>
+    <tr><td>CRIU</td><td>0.060 – 1.445 s</td><td>Memory only, no filesystem</td></tr>
+    <tr><td>Docker commit</td><td>0.416 – 6.915 s</td><td>Filesystem only</td></tr>
+    <tr><td>checkpoint-lite (CRIU + OverlayFS)</td><td>0.418 – 4.622 s</td><td>Hybrid</td></tr>
+    <tr><td>Podman</td><td>0.835 – 12.914 s</td><td>Filesystem only</td></tr>
+    <tr><td>Podman + CRIU</td><td>1.657 – 26.648 s</td><td>Hybrid</td></tr>
+    <tr><td>AWS VM snapshot</td><td>≈ 353 s</td><td>Whole machine</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p>A <code>ROLLBACK TO SAVEPOINT</code> on an InnoDB table of a few dozen rows is a
+sub-millisecond undo-log walk — three to six orders of magnitude below every row above.
+That gap <em>is</em> the argument the paper is making, and you can demonstrate it on a
+laptop.</p>
+
+<p class="cite">Source: Xu, Zhou, Wu &amp; Kaffes, <a href="https://arxiv.org/abs/2510.05556">“Toward
+Systems Foundations for Agentic Exploration”</a>, arXiv:2510.05556, 7 Oct 2025.</p>
+
+<h2>5 · Derived rules for this project</h2>
+
+<ol>
+  <li><strong>Create the table before opening the transaction.</strong> Per-task
+      <code>CREATE TABLE</code> is DDL; run it, then <code>START TRANSACTION</code>, then hand
+      control to the agent.</li>
+  <li><strong>Treat agent-issued DDL as a branch-abort event.</strong> Either reject it at the
+      tool boundary or detect it and fall back to a coarser restore mechanism. Silently
+      losing the savepoint is the one outcome you cannot allow.</li>
+  <li><strong>Score on the same connection that wrote.</strong> A reconnecting scorer reads
+      pre-branch state and reports a false negative.</li>
+  <li><strong>One connection per task, held open.</strong> Savepoints are session-scoped;
+      a pool that hands out a different connection mid-task destroys the branch.</li>
+  <li><strong>Never reuse a savepoint name</strong> for a nested branch — it replaces the
+      outer one instead of nesting. Use a depth-indexed name: <code>sp_0</code>,
+      <code>sp_1</code>, …</li>
+</ol>
+
+<div class="footer">
+  <h3>Related</h3>
+  <ul class="next-links">
+    <li><a href="../lessons/0001-can-a-savepoint-survive-your-agent-loop.html">Lesson 01 — Can a savepoint survive your agent loop?</a></li>
+    <li><a href="../MISSION.md">MISSION.md</a> · <a href="../RESOURCES.md">RESOURCES.md</a></li>
+  </ul>
+</div>
