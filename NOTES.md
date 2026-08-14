@@ -214,6 +214,29 @@ in the trace.
 This is a *project* decision; it belongs in the write-up's limitations section, not only here.
 See [[learning-records/0007-flat-restore-mvp.md]].
 
+## Decision — step = LLM call; parallel tool use OFF, 2026-08-14
+
+Yash forced the definition before engaging with the rejection-costs-a-step question. **A step is an
+LLM call, not a tool call**, and DB operations are uncapped. Both right — and structural, since
+parallel tool use is on by default and one assistant message may carry several `tool_use` blocks.
+
+**But it must be disabled here.** `checkpoint`/`execute_sql`/`restore` mutate one open transaction
+in sequence on one connection; blocks in a single message carry no ordering guarantee. Set
+`tool_choice={"type": "auto", "disable_parallel_tool_use": True}` — identically in both modes.
+Then one LLM call = one tool call = one DB statement, by enforcement rather than assumption.
+
+**The consequence resolves lesson 03's planted claim.** Exploration is serial in LLM calls (observe
+before choosing the next branch), so a 3-alternative exploration ≈ 10 turns ≈ 20,000 ms against
+3 restores ≈ 2 ms — **four orders of magnitude**. The "10 branches per turn" column is not merely
+unmeasured, it is **structurally unreachable** in this design. Fine-grained branching needs
+model-free branching: programmatic tool calling, or a search harness that explores without sampling.
+
+**Write-up claim this unlocks:** *mechanism latency is irrelevant in a serial agent loop and
+decisive only under model-free branching* — a regime boundary, stronger than confirming or denying
+the paper. See [[learning-records/0008-step-is-an-llm-call-and-what-follows.md]].
+
+Reference 03 and Reference 05 updated with the caveat and the `disable_parallel_tool_use` setting.
+
 ## Lesson 05 — planned
 
 The agent loop: tool schemas that make branching legible in the trace, and logging that can

@@ -115,6 +115,26 @@ mechanisms are a tax; only fine-grained branching makes them a wall. The paper's
 holds <strong>conditionally</strong>, and naming the condition is a contribution rather than a
 summary.</p>
 
+<div class="callout warn">
+  <span class="label">Update — the 10-branches column is unreachable in this design</span>
+  <p>Speculative exploration is <strong>serial in LLM calls</strong>: the agent must observe a
+  branch's result before choosing the next one, and each observation costs a model turn.
+  Parallel tool use would batch them, but it must be disabled here —
+  <code>checkpoint</code> / <code>execute_sql</code> / <code>restore</code> mutate one open
+  transaction in sequence, and blocks in a single assistant message carry no ordering guarantee.
+  Set <code>disable_parallel_tool_use: true</code>.</p>
+  <p>With that set, a 3-alternative exploration is roughly <strong>10 LLM turns ≈ 20,000 ms</strong>
+  against <strong>3 restores ≈ 2 ms</strong> — <strong>four orders of magnitude</strong>. Mechanism
+  latency is not merely small here; it is <em>unmeasurable</em>. Even <code>docker commit</code>
+  would be ~7% of the turn budget.</p>
+  <p><strong>The regime boundary is the finding.</strong> Fine-grained branching requires an agent
+  that branches <em>without consulting the model</em> — a different system design (programmatic tool
+  calling, where a script invokes tools from inside code execution and only the final result reaches
+  the model's context; or a search harness that explores without sampling). The honest claim is
+  conditional: mechanism latency is irrelevant in a serial agent loop and decisive only under
+  model-free branching. Naming that boundary is worth more than confirming or denying the paper.</p>
+</div>
+
 <h2>Limits to state</h2>
 <ul>
   <li>Localhost Docker — no network latency, no contention, no other tenants</li>

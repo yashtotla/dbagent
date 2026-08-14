@@ -150,9 +150,27 @@ tools</strong>, not raw SQL — the bash-versus-dedicated-tool distinction appli
 “reset to start” is <code>restore(0)</code> against an <code>sp_0</code> taken immediately after
 <code>START TRANSACTION</code>).</p>
 
+<div class="callout warn">
+  <span class="label">Disable parallel tool use</span>
+  <p>Parallel tool use is <strong>on by default</strong> — one assistant message may carry several
+  <code>tool_use</code> blocks, which the harness is expected to execute concurrently and return as
+  one batch. That is incoherent here: <code>checkpoint</code>, <code>execute_sql</code> and
+  <code>restore</code> mutate a single open transaction in sequence, on a single connection, and
+  blocks in one message carry no ordering guarantee. Running <code>restore</code> concurrently with
+  the <code>UPDATE</code> it should undo is not well-defined.</p>
+  <pre><code>tool_choice={"type": "auto", <span class="ok">"disable_parallel_tool_use": True</span>}</code></pre>
+  <p>With this set, <strong>one LLM call = one tool call = one DB statement</strong>. A “step” is
+  then unambiguous, and it is the expensive unit (~2 s) rather than the cheap one (~0.9 ms). Budget
+  and report steps in LLM calls; never cap database operations, which are four orders of magnitude
+  cheaper.</p>
+  <p>It must be set identically in both modes — see <a href="experiment-design-checklist.html">Reference 02</a>.</p>
+</div>
+
 <p><strong>Confound note:</strong> Mode B has two extra tools, so its prompt and action space
 differ from Mode A's. That is unavoidable by construction — state it and measure the policy change
-rather than trying to net it out. See <a href="experiment-design-checklist.html">Reference 02</a>.</p>
+rather than trying to net it out. A rejected statement also consumes a turn, so if Mode B fumbles
+into rejections more often it has a smaller <em>productive</em> budget; log rejections per mode and
+report both counts.</p>
 
 <h2>5 · The rejection protocol</h2>
 
