@@ -92,6 +92,28 @@ orders of magnitude" below the paper's mechanisms. Measured, it is **two to six*
 CRIU's best case (0.060 s) a 44-row rollback is only ~93×. Fixed in both files with the
 correction shown.
 
+## Pacing correction — lesson 03 overshot
+
+Yash reported lesson 03 went over his head. Cause: it introduced measurement methodology on top
+of four mechanisms that had only ever been *named*, never explained. Two new concepts at once,
+one undefined. My earlier note said "hold this level and push slightly harder" — that was wrong.
+
+**Hard rules from here:**
+
+1. **Never benchmark or compare a thing that has not been explained.** Naming it in a candidate
+   list is not teaching it.
+2. **One new concept per lesson.** Lesson 03 should have been two lessons.
+3. **Lead with a concrete analogy.** The Ctrl+Z / retype-from-template / save-a-copy /
+   snapshot-the-computer ladder did in one table what three paragraphs of prose had not. This was
+   already recorded as a stated preference and I failed to apply it.
+4. **Watch for result-promoted-to-premise.** He described the floor as "creating a checkpoint"
+   because `SAVEPOINT` measured at the floor. When a chain is not fully understood he anchors on
+   the most memorable fact and reasons outward from it — so state explicitly which items are
+   *findings* and which are *definitions*.
+
+Remediation shipped: Reference 04 (`restore-mechanisms.html`) plus two inserted sections in
+lesson 03. See [[learning-records/0004-lesson-03-overshot-the-zpd.md]].
+
 ## Lesson 04 — planned
 
 The agent loop: tool schemas that make branching legible in the trace, and logging that can

@@ -7,9 +7,52 @@
 The first one I produced was also impossible — a checkpoint that cost less than nothing — and
 fixing it is most of the lesson.</p>
 
+<div class="callout">
+  <span class="label">Read this first — added after the lesson landed badly</span>
+  <p>The original version benchmarked four mechanisms without explaining what two of them were.
+  That was a drafting failure, not a reading failure. The section below fixes it. If the four
+  candidates are already clear, skip to “Why this one.”</p>
+</div>
+
+<h2>Meet the four candidates</h2>
+
+<p><strong>These are four competing designs, not four stages of a run.</strong> You pick
+<em>one</em> and build Mode B out of it. The table later in this lesson is a shopping comparison,
+not a timeline.</p>
+
+<p>Four ways to build one feature — <em>undo</em>. Think about undoing work on a document:</p>
+
+<div class="table-wrap">
+<table>
+  <thead><tr><th>Mechanism</th><th>Document analogy</th><th>What it does here</th></tr></thead>
+  <tbody>
+    <tr><td><strong>Savepoint</strong></td>
+        <td>The editor's built-in <strong>Ctrl+Z</strong> — it already tracks changes, so undo just walks them back</td>
+        <td>InnoDB keeps an undo log anyway, for crash recovery. <code>SAVEPOINT</code> marks a position in it; <code>ROLLBACK TO SAVEPOINT</code> walks back to the mark.</td></tr>
+    <tr><td><strong>Replay-prefix</strong></td>
+        <td>Delete the file, open the blank template, <strong>retype</strong> every change worth keeping</td>
+        <td>Never undo — rebuild. <code>DROP DATABASE</code>, recreate the table, re-insert the 44 original rows, then re-run the statements the agent had accepted. The bad one is simply never replayed.</td></tr>
+    <tr><td><strong>mysqldump + reload</strong></td>
+        <td><strong>Save a full copy</strong> of the document as text; to undo, open the copy</td>
+        <td>Write the whole database out as SQL text; restore by feeding that text back in.</td></tr>
+    <tr><td><strong>docker commit</strong></td>
+        <td><strong>Snapshot the entire computer</strong> — OS, apps, documents — and restore the whole machine image</td>
+        <td>MySQL runs inside the <code>dbbench-mysql</code> container. Freeze its whole filesystem into an image; restore by starting a fresh container from it.</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p>Top to bottom: <strong>narrower and faster → broader and slower</strong>. Savepoint is fastest
+because it restores the <em>least</em>. That trade is the entire comparison, and it is why the
+raw speed ratio at the end of this lesson is the wrong headline.</p>
+
+<p>“Replay-<strong>prefix</strong>” means you replay the <em>prefix</em> of the agent's action
+list — everything up to the branch point. Full mechanics for all four, with cost drivers and a
+selection table, are in <a href="../reference/restore-mechanisms.html">Reference 04</a>.</p>
+
 <h2>Why this one</h2>
 
-<p>You have a working scorer and a mechanism shortlist. The remaining question is cost, and it
+<p>You have a working scorer and the four candidates above. The remaining question is cost, and it
 is the one your write-up leans on hardest: your spec asks “what the overhead is,” and the
 reference paper's entire argument is that generic mechanisms are <em>too slow</em>. If your cost
 numbers are soft, the argument is soft.</p>
@@ -33,8 +76,21 @@ measure is smaller than the machinery you measure it with.</p>
 
 <h2>The mistake I made first</h2>
 
+<div class="callout">
+  <span class="label">What “the floor” means</span>
+  <p>Every statement pays a fixed tax before doing any work: Python call overhead, the driver
+  serialising the statement, the network round trip to the container, MySQL parsing the SQL. On
+  this machine that is about <strong>0.11 ms</strong>.</p>
+  <p>To measure it, you time a statement that does <em>nothing</em> — a no-op. That is the floor.
+  It is not one of the four mechanisms; it is the tax you subtract to see what a mechanism
+  actually costs.</p>
+  <p><strong>So when <code>SAVEPOINT</code> comes in at the floor, that is a result, not a
+  definition.</strong> It means creating a checkpoint costs nothing beyond sending the statement.
+  Checkpoints are free; only restores cost anything.</p>
+</div>
+
 <p>To separate real work from overhead you measure a no-op and subtract. I used
-<code>SELECT 1</code>. That produced this:</p>
+<code>SELECT 1</code> as the no-op. That produced this:</p>
 
 <pre><code>SELECT 1  (round-trip floor)     p50   0.132 ms
 SAVEPOINT sp1                    p50   0.105 ms   <span class="hit">net  -0.027</span></code></pre>

@@ -1,0 +1,139 @@
+<title>Reference — The Four Restore Mechanisms</title>
+<link rel="stylesheet" href="../assets/lesson.css">
+
+<p class="eyebrow">dbagent · reference 04</p>
+<h1>The Four Restore Mechanisms</h1>
+<p class="standfirst">Four competing ways to build one feature: undo. You pick <strong>one</strong>
+and Mode B is built out of it. They are alternatives, not stages.</p>
+
+<h2>The ladder</h2>
+
+<p>Think about undoing work on a document. The four mechanisms sit on a ladder from
+<em>narrow and fast</em> to <em>broad and slow</em>.</p>
+
+<div class="table-wrap">
+<table>
+  <thead><tr><th>Mechanism</th><th>Document analogy</th><th>Measured p50</th></tr></thead>
+  <tbody>
+    <tr><td><strong>Savepoint</strong></td>
+        <td>The editor's built-in <strong>Ctrl+Z</strong> — it already tracks changes, undo walks them back</td>
+        <td>0.209–0.646 ms</td></tr>
+    <tr><td><strong>Replay-prefix</strong></td>
+        <td>Delete the file, open the blank template, <strong>retype</strong> every change worth keeping</td>
+        <td>6.4–9.4 ms</td></tr>
+    <tr><td><strong>mysqldump + reload</strong></td>
+        <td><strong>Save a full copy</strong> as text; to undo, open the copy</td>
+        <td>105 ms</td></tr>
+    <tr><td><strong>docker commit</strong></td>
+        <td><strong>Snapshot the whole computer</strong>; restore the entire machine image</td>
+        <td>510 ms</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p>Savepoint is fastest because it restores the <em>least</em>. That trade — coverage against
+cost — is the whole comparison.</p>
+
+<h2>1 · Savepoint</h2>
+
+<p>InnoDB already keeps an <strong>undo log</strong> for every open transaction, because it needs
+one for crash recovery. A savepoint just marks a position in that log. Restoring walks the log
+backwards to the mark.</p>
+
+<pre><code>START TRANSACTION;
+SAVEPOINT sp1;                       <span class="cmt">-- mark a position. Free.</span>
+UPDATE `game_results` SET ...;       <span class="cmt">-- speculative</span>
+ROLLBACK TO SAVEPOINT sp1;           <span class="cmt">-- walk it back</span></code></pre>
+
+<p><strong>Restores:</strong> rows changed in this transaction, in this session.<br>
+<strong>Misses:</strong> anything DDL touched, the filesystem, process memory, other sessions.<br>
+<strong>Cost driver:</strong> rows dirtied since the mark — <em>not</em> table size.</p>
+
+<div class="callout warn">
+  <span class="label">Its fragility</span>
+  <p>Any DDL, any <code>COMMIT</code>, any <code>BEGIN</code>, or a dropped connection destroys
+  it silently. See <a href="mysql-transaction-boundaries.html">Reference 01</a>. This is the
+  price of borrowing a structure the engine maintains for its own purposes.</p>
+</div>
+
+<h2>2 · Replay-prefix</h2>
+
+<p>Never undo anything — <strong>rebuild from scratch</strong>. Keep a list of the statements the
+agent has decided to keep. To restore: throw the database away, recreate it from the task's
+initial state, then re-run that list.</p>
+
+<pre><code><span class="cmt"># the agent has accepted: [stmt1, stmt2, stmt3]</span>
+<span class="cmt"># stmt4 turned out to be wrong. To get back to the state after stmt3:</span>
+
+DROP DATABASE bench;  CREATE DATABASE bench;
+CREATE TABLE `game_results` (...);        <span class="cmt">-- the 44 original rows</span>
+INSERT INTO `game_results` VALUES ...;
+<span class="cmt"># then replay the prefix</span>
+stmt1; stmt2; stmt3;</code></pre>
+
+<p>“Prefix” = the front portion of the action list, up to the branch point. The bad statement is
+simply never replayed.</p>
+
+<p><strong>Restores:</strong> the whole database.<br>
+<strong>Misses:</strong> filesystem outside the database, process memory.<br>
+<strong>Cost driver:</strong> the fixed rebuild, mostly. Measured
+<code>≈ 6.4 ms + 0.15 ms × k</code> for k replayed statements — so the rebuild dominates until
+k ≈ 42. Zero storage cost, which is its real appeal.</p>
+
+<h2>3 · mysqldump + reload</h2>
+
+<p>Ask MySQL to write the entire database out as a text file of SQL statements. To restore, feed
+that text back in.</p>
+
+<pre><code>mysqldump -uroot -ppw bench &gt; snapshot.sql     <span class="cmt"># checkpoint</span>
+mysql    -uroot -ppw bench &lt; snapshot.sql      <span class="cmt"># restore</span></code></pre>
+
+<p><strong>Restores:</strong> the whole database, logically.<br>
+<strong>Misses:</strong> process memory, container state.<br>
+<strong>Cost driver:</strong> spawning two processes and serialising through text. At 44 rows the
+data is irrelevant — <strong>the 105 ms is almost entirely process startup</strong>.</p>
+
+<h2>4 · docker commit</h2>
+
+<p>Your MySQL server runs inside a Docker container (<code>dbbench-mysql</code>). A container has
+a filesystem; <code>docker commit</code> freezes that filesystem into a reusable image. Restoring
+means starting a fresh container from the frozen image.</p>
+
+<pre><code>docker commit dbbench-mysql snap:v1            <span class="cmt"># checkpoint</span>
+docker run -d --name restored snap:v1          <span class="cmt"># restore</span></code></pre>
+
+<p><strong>Restores:</strong> the entire container filesystem — database files, config, logs.<br>
+<strong>Misses:</strong> process memory (that needs CRIU, which is what the paper benchmarks).<br>
+<strong>Cost driver:</strong> copying filesystem layers. 510 ms measured, n=3.</p>
+
+<h2>Choosing</h2>
+
+<div class="table-wrap">
+<table>
+  <thead><tr><th>Mechanism</th><th>Storage cost</th><th>Survives DDL?</th><th>Survives reconnect?</th><th>Verdict here</th></tr></thead>
+  <tbody>
+    <tr><td>Savepoint</td><td>None</td><td><strong>No</strong></td><td><strong>No</strong></td>
+        <td>Fastest by 30×. Fragile — needs the action guard from <a href="experiment-design-checklist.html">Reference 02</a></td></tr>
+    <tr><td>Replay-prefix</td><td>None</td><td>Yes</td><td>Yes</td>
+        <td>Robust fallback. Good second mechanism for a cost-not-truthfulness comparison</td></tr>
+    <tr><td>mysqldump</td><td>One file per checkpoint</td><td>Yes</td><td>Yes</td>
+        <td>Dominated — slower than replay-prefix with no added coverage</td></tr>
+    <tr><td>docker commit</td><td>One image layer each</td><td>Yes</td><td>Yes</td>
+        <td>Only if you need state outside the database. You do not</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p><strong>Savepoint and replay-prefix are the live pair.</strong> Both restore correctly, so
+comparing them varies <em>cost</em> without varying <em>truthfulness</em> — the clean control
+from <a href="experiment-design-checklist.html">Reference 02</a>. The other two exist mainly to
+show what generality costs.</p>
+
+<div class="footer">
+  <h3>Related</h3>
+  <ul class="next-links">
+    <li><a href="restore-cost.html">Reference 03 — Restore Cost, measured</a></li>
+    <li><a href="../lessons/0003-what-you-are-actually-timing.html">Lesson 03 — What you are actually timing</a></li>
+    <li><a href="mysql-transaction-boundaries.html">Reference 01</a> · <a href="experiment-design-checklist.html">Reference 02</a></li>
+  </ul>
+</div>
