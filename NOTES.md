@@ -184,6 +184,36 @@ the benchmark's source; and when a guard rejects something the agent plausibly n
 same breath where the capability went — a rejection list without its routing table reads as a
 capability list.
 
+## Decision — flat `restore()` for the MVP, 2026-08-14
+
+**MVP:** `restore()` takes no argument. It rolls back to the most recent checkpoint and **keeps**
+that savepoint, so retrying alternatives at one decision point costs one call each.
+
+**Deferred to a post-MVP extension:** multi-level backtracking — going *up* past the most recent
+checkpoint. Two ways to add it later, same capability: pop-semantics on `restore()` (walk up one
+level per call) or an addressable `restore(handle)` (jump directly).
+
+**Justify it this way, not the other way.** Yash originally framed the deferral as "hard to reason
+about trivially." The stronger and true justification, verified on MySQL 8.4.11:
+
+| test | result |
+|---|---|
+| repeated flat restores across three nested savepoints | `L3 → L2 → L1 → original` — reaches any ancestor |
+| one savepoint, three alternatives tried against it | all three return `'original'` — the savepoint survives repeated rollbacks |
+
+So flat restore is **expressively complete under stack discipline**; the handle is a step-count
+optimization (k calls instead of 1 for a k-level jump), not a capability. And the second result
+covers the exact N-alternatives-at-one-decision-point pattern that motivated Mode B in the first
+place — zero handles needed.
+
+**The measurement that closes the limitation:** log **checkpoint depth per task**. If the agent
+never exceeds depth 1 across all 40 tasks, multi-level backtracking was never reachable and the
+simplification forfeited nothing — a measured non-issue rather than an admitted gap. One integer
+in the trace.
+
+This is a *project* decision; it belongs in the write-up's limitations section, not only here.
+See [[learning-records/0007-flat-restore-mvp.md]].
+
 ## Lesson 05 — planned
 
 The agent loop: tool schemas that make branching legible in the trace, and logging that can

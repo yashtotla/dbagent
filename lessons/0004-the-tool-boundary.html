@@ -142,7 +142,7 @@ distinction from the top of this lesson, applied one level in.</p>
   <tbody>
     <tr><td><code>execute_sql(sql)</code></td><td>✓</td><td>✓</td><td>guard, then execute</td></tr>
     <tr><td><code>checkpoint()</code></td><td>—</td><td>✓</td><td><code>SAVEPOINT sp_&lt;depth&gt;</code>, returns the handle</td></tr>
-    <tr><td><code>restore(handle)</code></td><td>—</td><td>✓</td><td><code>ROLLBACK TO SAVEPOINT sp_&lt;handle&gt;</code></td></tr>
+    <tr><td><code>restore()</code></td><td>—</td><td>✓</td><td><code>ROLLBACK TO SAVEPOINT sp_&lt;top&gt;</code>, keeps it</td></tr>
     <tr><td><code>commit_final_answer()</code></td><td>✓</td><td>✓</td><td><code>COMMIT</code>, end the task</td></tr>
   </tbody>
 </table>
@@ -158,8 +158,8 @@ distinction from the top of this lesson, applied one level in.</p>
   <li><strong>Countable branches.</strong> Lesson 03 established that overhead scales with
       <em>branches per turn</em>. A <code>checkpoint()</code> call is one structured trace event;
       <code>execute_sql("SAVEPOINT sp1")</code> is a string you'd have to parse SQL out of.</li>
-  <li><strong>Handle validation.</strong> <code>restore(3)</code> can be refused when depth 3 no
-      longer exists, instead of surfacing as error 1305 mid-branch.</li>
+  <li><strong>Depth tracking.</strong> A <code>restore()</code> below depth 0 can be refused,
+      instead of issuing a bare <code>ROLLBACK</code> that discards the whole task.</li>
 </ul>
 
 <p>The two verbs the agent genuinely never needs: <strong>bare <code>COMMIT</code></strong>
@@ -273,13 +273,18 @@ the trigger condition belongs in the tool's own description, not only in your sy
 
   <div class="ask">
     <span class="label">Ask your teacher</span>
-    <p>The genuinely contestable claim left in this lesson is <code>restore(handle)</code> taking a
-    handle at all. A flat <code>restore()</code> that always returns to the most recent checkpoint
-    is simpler and matches how the agent probably thinks; an addressable handle allows jumping back
-    several branches at once, which is a real tree search but also a much larger action space to
-    reason about. I picked the handle because it makes branch structure legible in the trace — that
-    is a measurement convenience, not evidence about what helps the agent. Argue it before you
-    build it.</p>
+    <p><strong>Resolved:</strong> the handle is gone. Yash scoped <code>restore()</code> flat for
+    the MVP, and testing showed that is stronger than it first looked — repeated flat restores reach
+    any ancestor, and one savepoint serves N alternatives at a decision point. The cut removes
+    convenience, not reachability. Deferred: multi-level backtracking, closed out by logging
+    checkpoint depth per task.</p>
+    <p><strong>Still open, and I don't think it's been enumerated yet:</strong> a rejected statement
+    consumes a step. If Mode B's larger action space makes it fumble into rejections more often than
+    Mode A, the two modes have silently different <em>productive</em> step budgets — the same
+    category as the checkpoint-calls-consume-steps row in
+    <a href="../reference/experiment-design-checklist.html">Reference 02</a>, which that table lists
+    and this case isn't in. Should a rejection cost a step, cost nothing, or be capped per task?
+    Each answer is a different claim about what you're measuring.</p>
   </div>
 </div>
 

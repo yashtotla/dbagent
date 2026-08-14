@@ -102,7 +102,7 @@ tools</strong>, not raw SQL — the bash-versus-dedicated-tool distinction appli
   <tbody>
     <tr><td><code>execute_sql(sql)</code></td><td>✓</td><td>✓</td><td>guard, then execute</td></tr>
     <tr><td><code>checkpoint()</code></td><td>—</td><td>✓</td><td><code>SAVEPOINT sp_&lt;depth&gt;</code> → handle</td></tr>
-    <tr><td><code>restore(handle)</code></td><td>—</td><td>✓</td><td><code>ROLLBACK TO SAVEPOINT sp_&lt;handle&gt;</code></td></tr>
+    <tr><td><code>restore()</code></td><td>—</td><td>✓</td><td><code>ROLLBACK TO SAVEPOINT sp_&lt;top&gt;</code>, keeps it</td></tr>
     <tr><td><code>commit_final_answer()</code></td><td>✓</td><td>✓</td><td><code>COMMIT</code>, end task</td></tr>
   </tbody>
 </table>
@@ -118,9 +118,32 @@ tools</strong>, not raw SQL — the bash-versus-dedicated-tool distinction appli
   <li><strong>Countable branches.</strong> One structured trace event per checkpoint, versus
       parsing SQL out of strings. <a href="restore-cost.html">Reference 03</a> shows overhead
       scales with branches per turn — you can only report that if branching is legible.</li>
-  <li><strong>Handle validation.</strong> Refuse <code>restore(3)</code> when depth 3 is gone,
-      instead of hitting error 1305 mid-branch.</li>
+  <li><strong>Depth tracking.</strong> Refuse a <code>restore()</code> below depth 0 instead of
+      issuing a bare <code>ROLLBACK</code> that would discard the whole task.</li>
 </ul>
+
+<div class="callout check">
+  <span class="label">MVP scope — flat <code>restore()</code>, and why that's defensible</span>
+  <p><code>restore()</code> takes no argument: it rolls back to the most recent checkpoint and
+  <strong>keeps</strong> that savepoint. Deferred to a later extension: <strong>multi-level
+  backtracking</strong> — going <em>up</em> past the most recent checkpoint, reachable either by
+  pop-semantics or an addressable handle.</p>
+  <p>Verified on MySQL 8.4.11, and this is the justification to use:</p>
+  <ul>
+    <li>Repeated flat restores across nested savepoints walk the stack —
+        <code>L3 → L2 → L1 → original</code>. Flat restore reaches <strong>any ancestor</strong>;
+        the handle only saves calls.</li>
+    <li>One savepoint survives repeated rollbacks — try A → restore → try B → restore → try C, all
+        returning <code>'original'</code>. The N-alternatives-at-one-decision-point pattern needs
+        <strong>one checkpoint and zero handles</strong>.</li>
+  </ul>
+  <p>So the cut removes <em>convenience</em>, not <em>reachability</em>. Say that in the write-up
+  rather than “it was hard to reason about” — the first is accepted, the second is discounted.</p>
+  <p><strong>Then close it with a measurement:</strong> log <strong>checkpoint depth per task</strong>.
+  If the agent never exceeds depth 1 across all 40 tasks, multi-level backtracking was never
+  reachable and the simplification forfeited nothing. One integer turns an admitted gap into a
+  measured non-issue.</p>
+</div>
 
 <p><strong>Never needed by the agent:</strong> bare <code>COMMIT</code> (happens once, via
 <code>commit_final_answer</code>) and bare <code>ROLLBACK</code> (discards the whole task —
