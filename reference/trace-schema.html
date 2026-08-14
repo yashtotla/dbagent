@@ -1,0 +1,107 @@
+<title>Reference — Trace Schema</title>
+<link rel="stylesheet" href="../assets/lesson.css">
+
+<p class="eyebrow">dbagent · reference 06</p>
+<h1>Trace Schema</h1>
+<p class="standfirst">Derived backwards from the sentences the write-up must support. Any field not
+here is a question you have declined to answer.</p>
+
+<h2>1 · Claims → fields</h2>
+
+<div class="table-wrap">
+<table>
+  <thead><tr><th>Sentence</th><th>Required field</th></tr></thead>
+  <tbody>
+    <tr><td>“Mode B recovered tasks 7, 19, 31; Mode A did not.”</td><td><code>task_id</code>, <code>mode</code>, <code>passed</code></td></tr>
+    <tr><td>“The agent tried X, saw the row count, restored, tried Y.”</td><td>ordered <code>event</code> + <code>rowcount</code></td></tr>
+    <tr><td>“B explored 2.3 branches/task, A explored 1.0.”</td><td><code>checkpoint</code> / <code>restore</code> events</td></tr>
+    <tr><td>“Multi-level backtracking never bound.”</td><td><code>depth</code></td></tr>
+    <tr><td>“The guard forfeited no reachable score.”</td><td><code>rejected</code> events</td></tr>
+    <tr><td>“Mechanism cost was 0.01% of wall clock.”</td><td><code>db_ms</code> <em>and</em> <code>llm_ms</code>, separate</td></tr>
+    <tr><td>“Both modes had equal productive step budgets.”</td><td><code>steps_used</code>, <code>rejections</code>, per mode</td></tr>
+    <tr><td>“Model, effort, thinking held fixed.”</td><td>run header</td></tr>
+  </tbody>
+</table>
+</div>
+
+<div class="callout warn">
+  <span class="label">What <code>CLAUDE.md</code> specifies is insufficient</span>
+  <p><code>(step, sql, response, latency)</code> is shaped for a Mode A loop where every step is an
+  <code>execute_sql</code>. It carries no <code>mode</code> (so runs can't be paired), no
+  <code>passed</code> (so recovery is undetectable), no <code>event</code> type (so checkpoint,
+  restore and rejection are inexpressible), no <code>depth</code>, and one merged
+  <code>latency</code> where the whole cost argument needs two.</p>
+</div>
+
+<h2>2 · The records</h2>
+
+<p>One file per <code>(task, mode)</code>: <code>runs/&lt;task_id&gt;.&lt;mode&gt;.jsonl</code>.</p>
+
+<pre><code><span class="cmt">// header — one per file, first line</span>
+{"type":"run","task_id":"task_19","mode":"B","model":"claude-opus-5",
+ "effort":"high","thinking":"adaptive","disable_parallel_tool_use":true,
+ "max_steps":30,"guard":"allowlist-v1"}
+
+<span class="cmt">// steps — one per LLM call. event ∈ execute_sql | rejected |</span>
+<span class="cmt">//         checkpoint | restore | commit_final_answer</span>
+{"type":"step","n":1,"event":"checkpoint","llm_ms":1950,"db_ms":0.10,"depth":1}
+{"type":"step","n":2,"event":"execute_sql","llm_ms":2300,"db_ms":0.44,"depth":1,
+ "sql":"UPDATE ...","rowcount":3}
+{"type":"step","n":4,"event":"restore","llm_ms":2400,"db_ms":0.66,"depth":1}
+{"type":"step","n":5,"event":"rejected","llm_ms":1900,"depth":1,
+ "sql":"CREATE INDEX ...","reason":"rejected: CREATE is not permitted"}
+
+<span class="cmt">// result — one per file, last line</span>
+{"type":"result","task_id":"task_19","mode":"B","passed":true,"steps_used":7,
+ "hash_got":"[('6e5be...',)]","hash_want":"[('6e5be...',)]"}</code></pre>
+
+<h2>3 · Rules</h2>
+
+<ol>
+  <li><strong>Store events, derive counters.</strong> Never write <code>restores: 2</code> — count
+      <code>restore</code> events at analysis time. A stored counter can disagree with the events it
+      summarises.</li>
+  <li><strong>Flush every line.</strong> A run that dies at step 19 of 30 must still leave 19
+      analysable lines.</li>
+  <li><strong>One step = one LLM call.</strong> With <code>disable_parallel_tool_use</code> set,
+      that is also one tool call and one DB statement — see
+      <a href="tool-boundary.html">Reference 05</a>.</li>
+  <li><strong>Two latencies, always separate.</strong> <code>db_ms</code> is ~0.9 ms,
+      <code>llm_ms</code> is ~2 s. Merging them destroys the cost argument
+      (<a href="restore-cost.html">Reference 03</a>).</li>
+  <li><strong>Header carries the controls.</strong> Model id, effort, thinking, parallel-tool-use,
+      max_steps, guard version. These are the Reference 02 hold-fixed list; logging them per run is
+      how you prove they were held.</li>
+</ol>
+
+<h2>4 · Analysis — one function per claim</h2>
+
+<div class="table-wrap">
+<table>
+  <thead><tr><th>Function</th><th>Answers</th></tr></thead>
+  <tbody>
+    <tr><td><code>summarize(records)</code></td><td>Per-run counters: steps, checkpoints, restores, rejections, max depth, both latencies</td></tr>
+    <tr><td><code>compare_modes(summaries)</code></td><td><strong>The deliverable</strong> — which task ids B recovered, which A won, how many discordant pairs</td></tr>
+    <tr><td><code>narrate(records)</code></td><td>One task's branch structure as readable lines — the named-case paragraph</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p>Implementation: <a href="../assets/trace.py"><code>assets/trace.py</code></a>. The discordant
+count from <code>compare_modes</code> feeds straight into the exact paired test in
+<a href="experiment-design-checklist.html">Reference 02</a> — six clean flips in one direction is
+the reportable threshold.</p>
+
+<h2>5 · The habit</h2>
+
+<p><strong>Write the analysis script before the run.</strong> If it executes end-to-end against
+synthetic data, the schema is sufficient. If it needs a field you didn't plan to log, you found out
+for free rather than after burning a day of API budget.</p>
+
+<div class="footer">
+  <h3>Related</h3>
+  <ul class="next-links">
+    <li><a href="../lessons/0005-design-the-trace-backwards.html">Lesson 05 — Design the trace backwards</a></li>
+    <li><a href="experiment-design-checklist.html">Reference 02</a> · <a href="restore-cost.html">Reference 03</a> · <a href="tool-boundary.html">Reference 05</a></li>
+  </ul>
+</div>

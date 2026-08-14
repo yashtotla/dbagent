@@ -237,7 +237,36 @@ the paper. See [[learning-records/0008-step-is-an-llm-call-and-what-follows.md]]
 
 Reference 03 and Reference 05 updated with the caveat and the `disable_parallel_tool_use` setting.
 
-## Lesson 05 — planned
+## Lesson 05 — shipped
+
+One concept: **design the trace backwards from the claims you intend to make.** Analogy first
+(a schema modelled on entities that can't answer the product's queries — his world). The hook is
+the same shape as lessons 02 and 04: `CLAUDE.md` states the requirement correctly ("aggregate
+numbers alone will not answer … that requires naming specific tasks") and then specifies
+`(step, sql, response, latency)`, which **cannot answer it** — no `mode` (runs can't be paired),
+no `passed` (recovery undetectable), no `event` type (checkpoint/restore/rejection inexpressible),
+no `depth`, and one merged latency where the cost argument needs two.
+
+Every decision from the last three sessions became a schema field, which is the point worth making:
+`db_ms`/`llm_ms` split exists only because he defined a step as an LLM call; `depth` exists only
+because he cut restore to flat. A trace designed before those decisions would have lost both
+arguments.
+
+`assets/trace.py` — `TraceWriter` + `summarize` / `compare_modes` / `narrate`, one analysis
+function per write-up sentence. Demo runs on **synthetic** data (labelled as such, no API calls) and
+prints `Checkpointing recovered: ['task_19']` plus the narrated case — i.e. the deliverable's own
+sentence, generated from the trace.
+
+Reference 06 is the printable version.
+
+**Habit taught:** write the analysis script before the run. If it executes end-to-end on synthetic
+data the schema is sufficient; if it needs an unplanned field you learned that for free.
+
+**Contestable claim planted:** one file per `(task, mode)` versus one per task with a mode field.
+Chosen so a re-run of one arm can't corrupt the other and pairing is a filename join — but it makes
+side-by-side failure analysis a two-file operation, which is the thing he'll actually be doing.
+
+## Lesson 06 — planned
 
 The agent loop: tool schemas that make branching legible in the trace, and logging that can
 answer "which task did checkpointing rescue?" Natural follow-on — lesson 03 established that
