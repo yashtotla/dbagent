@@ -266,6 +266,39 @@ data the schema is sufficient; if it needs an unplanned field you learned that f
 Chosen so a re-run of one arm can't corrupt the other and pairing is a filename join — but it makes
 side-by-side failure analysis a two-file operation, which is the thing he'll actually be doing.
 
+### Lesson 05 — refuted and rewritten, same session
+
+Yash rejected the whole premise: "in my experience, that is the wrong model. We should log
+everything and construct an object that uses data from the run to produce some pre agreed fields."
+He is right. The lesson conflated a **sufficiency check** with a **capture policy**, and presented
+minimality as a virtue when the asymmetry is decisive — an unnecessary field costs bytes, a missing
+one costs a re-run.
+
+His framing of the failure mode is exact: *"we are assuming so much about the observations that we
+may or may not see."* He also caught that the lesson broke its own "store events, derive counters"
+rule by curating which events were allowed to exist.
+
+**The critique caught a real measurement error.** The curated schema had no `stop_reason`, so a Mode
+B run truncated at `max_tokens` was indistinguishable from a wrong answer — and would have been
+reported as "Mode A recovered a task Mode B lost." Directional, too: Mode B takes more steps →
+more tokens → truncates more often, so the artifact penalises the arm under study. Also dropped:
+`usage`, assistant `content` blocks, verbatim `db_error`.
+
+Rewritten around his two-layer model. `assets/trace.py` now captures the full API response and
+`compare_modes()` **excludes** truncated/refused/incomplete runs and reports them separately. The
+demo shows `task_31` being dropped as an artifact rather than scored. Reference 06 rewritten to
+match. See [[learning-records/0009-capture-everything-derive-narrowly.md]].
+
+**What survives of the backwards check:** it finds what must be *decided*, not what must be
+*captured* — mode label, scorer verdict, held-fixed config, prompt hash. Four commitments;
+everything else is capture.
+
+**Standing rule from this:** stop defaulting to minimality. Where capture is cheap and re-obtaining
+is expensive, maximal capture plus a derived view is correct. Twice now
+([[learning-records/0003-placebo-control-refuted.md]] and this) he has refuted a design that traded
+observability for tidiness — flag that trade explicitly when making it, because it is where he
+reliably finds the flaw and is reliably right.
+
 ## Lesson 06 — planned
 
 The agent loop: tool schemas that make branching legible in the trace, and logging that can

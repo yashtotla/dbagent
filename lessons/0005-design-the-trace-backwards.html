@@ -1,136 +1,172 @@
-<title>Lesson 05 — Design the trace backwards</title>
+<title>Lesson 05 — Capture everything, derive narrowly</title>
 <link rel="stylesheet" href="../assets/lesson.css">
 
-<p class="eyebrow">dbagent · lesson 05 · ~12 minutes</p>
-<h1>Design the trace backwards</h1>
-<p class="standfirst">Your spec says failure analysis comes from reading traces, and that aggregates
-cannot answer “which cases did checkpointing rescue?” — both correct. It then specifies a field list
-that cannot answer it either.</p>
+<p class="eyebrow">dbagent · lesson 05 · ~14 minutes · rewritten after review</p>
+<h1>Capture everything, derive narrowly</h1>
+<p class="standfirst">The first version of this lesson told you to derive your schema from the claims
+you expect to make. Yash rejected that, correctly. This is the rebuilt version, and it is a better
+lesson than the one it replaces.</p>
 
-<h2>The idea, in one analogy</h2>
+<div class="callout warn">
+  <span class="label">What was wrong, precisely</span>
+  <p>The original conflated a <strong>sufficiency check</strong> with a <strong>capture
+  policy</strong>. “For each claim, name the field” is a fine way to find what is <em>missing</em>.
+  It then wrote that the resulting set “is usually smaller than log-everything, and unlike that pile,
+  it is sufficient” — presenting minimality as a virtue.</p>
+  <p>Yash's objection: <em>“We are assuming so much about the observations that we may or may not
+  see.”</em> That is exactly the failure mode. A trace built only from anticipated claims is
+  structurally blind to the unanticipated finding — and on a project whose deliverable asks for
+  <em>named cases of behaviour nobody predicted</em>, that blindness is fatal.</p>
+</div>
 
-<p>You have built a table modelled on what the data <em>is</em>, then discovered it can't answer
-what the product actually <em>asks</em>. The fix is always the same: design the schema from the
-queries, not the entities.</p>
-
-<p>A trace is that, with a worse feedback loop. <strong>Any field you don't log is a question you
-have silently declined to answer</strong> — and you find out which ones at analysis time, when
-re-running costs another day and another slice of API budget.</p>
-
-<p>So: enumerate the sentences the write-up has to support. For each, ask what field makes it
-checkable. That set is your schema. It is usually smaller than “log everything useful,” and unlike
-that pile, it is <em>sufficient</em>.</p>
-
-<h2>Your spec's field list can't answer your spec's question</h2>
-
-<p><code>CLAUDE.md</code> specifies logging <code>(step, sql, response, latency)</code>. Hold it
-against the deliverable — “cases in which checkpointing enables recovery that linear execution
-cannot” — and the gaps are structural, not cosmetic:</p>
+<h2>The asymmetry that settles it</h2>
 
 <div class="table-wrap">
 <table>
-  <thead><tr><th>Missing</th><th>Consequence</th></tr></thead>
+  <thead><tr><th></th><th>Cost</th></tr></thead>
   <tbody>
-    <tr><td><strong>mode</strong></td><td>You cannot pair a task's two runs, so you cannot compute a discordant pair — the only kind that carries signal (Reference 02)</td></tr>
-    <tr><td><strong>passed</strong></td><td>Outcome lives only in the scorer's memory. Recovery is undetectable from the trace.</td></tr>
-    <tr><td><strong>event type</strong></td><td>Every record is assumed to be a SQL statement. A checkpoint, a restore and a rejection are none of them.</td></tr>
-    <tr><td><strong>depth</strong></td><td>The multi-level-backtracking limitation stays an admission instead of becoming a measured non-issue</td></tr>
-    <tr><td><strong>two latencies</strong></td><td>One <code>latency</code> field cannot separate the ~0.9 ms database call from the ~2 s model call — which is the entire cost argument</td></tr>
+    <tr><td>Logging a field you turn out not to need</td><td><strong>bytes</strong> — 40 tasks × 2 modes × ~10 steps ≈ 800 records</td></tr>
+    <tr><td>Missing a field you turn out to need</td><td><strong>re-run the experiment</strong> — a day and a slice of API budget</td></tr>
   </tbody>
 </table>
 </div>
 
-<p>The list isn't wrong so much as <em>shaped for Mode A</em>: a loop where every step is an
-<code>execute_sql</code> and nothing else exists. Mode B's whole vocabulary is missing. Same failure
-as the scorer in Lesson 02 — right in intent, short in the one dimension that mattered.</p>
+<p>There is no scale in this project at which curation pays for itself. Capture is cheap;
+irreversibility is expensive — which, you may notice, is the same asymmetry the whole project is
+about.</p>
 
-<h2>Backwards from the claims</h2>
-
-<p>Every sentence this project needs to support, and the field that makes it checkable:</p>
+<h2>Two layers, two different rules</h2>
 
 <div class="table-wrap">
 <table>
-  <thead><tr><th>Sentence you want to write</th><th>Field it requires</th></tr></thead>
+  <thead><tr><th>Layer</th><th>Rule</th><th>Why</th></tr></thead>
   <tbody>
-    <tr><td>“Mode B recovered tasks 7, 19 and 31; Mode A did not.”</td><td><code>task_id</code>, <code>mode</code>, <code>passed</code></td></tr>
-    <tr><td>“In case 19 the agent tried X, saw the row count was wrong, restored, and tried Y.”</td><td>ordered <code>event</code> records + <code>rowcount</code></td></tr>
-    <tr><td>“Mode B explored 2.3 branches per task, Mode A 1.0.”</td><td><code>checkpoint</code> / <code>restore</code> events</td></tr>
-    <tr><td>“Multi-level backtracking never bound.”</td><td><code>depth</code></td></tr>
-    <tr><td>“The guard forfeited no reachable score.”</td><td><code>rejected</code> events</td></tr>
-    <tr><td>“Mechanism cost was 0.01% of wall clock.”</td><td><code>db_ms</code> <em>and</em> <code>llm_ms</code>, separately</td></tr>
-    <tr><td>“Both modes had equal productive step budgets.”</td><td><code>steps_used</code>, <code>rejections</code>, per mode</td></tr>
-    <tr><td>“Model, effort and thinking were held fixed.”</td><td>a run header</td></tr>
+    <tr><td><strong>Raw capture</strong></td><td>Log everything cheap to observe. Append-only.</td>
+        <td>Insurance against the question you haven't thought of yet</td></tr>
+    <tr><td><strong>Derived view</strong></td><td>Compute the agreed fields. Pure function of raw.</td>
+        <td>Keeps analysis legible — and <em>recomputable</em></td></tr>
   </tbody>
 </table>
 </div>
 
-<p>Notice what falls out: the last row is why there's a header record at all, and the
-<code>db_ms</code>/<code>llm_ms</code> split exists only because you settled last session that a
-step is an LLM call. <strong>Design decisions become schema fields.</strong> A trace written before
-those decisions were made would have merged both latencies and lost the argument.</p>
+<p>The separation is what makes late questions survivable. Decide mid-analysis that you want “how
+many statements did the agent try before its first restore?” — under a two-layer design that is a
+new function over existing logs. Under a curated schema it is a re-run.</p>
 
-<h2>The schema</h2>
+<p>The original lesson already contained the germ of this and failed to follow it: it said
+<em>“store events, derive counters”</em> — then curated which events were allowed to exist. Yash's
+correction is that same rule applied one level up. <strong>The events are raw too.</strong></p>
 
-<p>Three record types in <code>runs/&lt;task_id&gt;.&lt;mode&gt;.jsonl</code>. Header, steps,
-result:</p>
+<h2>So what <em>is</em> the backwards check for?</h2>
 
-<pre><code>{"type":"run","task_id":"task_19","mode":"B","model":"claude-opus-5",
- "effort":"high","thinking":"adaptive","disable_parallel_tool_use":true,
- "max_steps":30,"guard":"allowlist-v1"}
+<p>Not capture. Capture everything. The check tells you what must be <strong>decided or
+arranged</strong> before the run, because no amount of logging recovers it afterwards:</p>
 
-{"type":"step","n":1,"event":"checkpoint","llm_ms":1950,"db_ms":0.10,"depth":1}
-{"type":"step","n":2,"event":"execute_sql","llm_ms":2300,"db_ms":0.44,"depth":1,
- "sql":"UPDATE `Statistics` SET `Wins`='12' WHERE `Team`='Rams'","rowcount":3}
-{"type":"step","n":4,"event":"restore","llm_ms":2400,"db_ms":0.66,"depth":1}
-{"type":"step","n":5,"event":"rejected","llm_ms":1900,"depth":1,
- "sql":"CREATE INDEX ...","reason":"rejected: CREATE is not permitted"}
+<div class="table-wrap">
+<table>
+  <thead><tr><th>Commitment</th><th>Why logging can't save you</th></tr></thead>
+  <tbody>
+    <tr><td><code>mode</code> label</td><td>Nothing in an API response says “this was arm B”</td></tr>
+    <tr><td>scorer verdict</td><td><code>passed</code> exists only if you run the scorer and write it down</td></tr>
+    <tr><td>held-fixed config</td><td>“We held effort fixed” is unprovable unless effort is in the header</td></tr>
+    <tr><td>prompt identity</td><td>A per-run hash, or you cannot show the prompt never drifted</td></tr>
+  </tbody>
+</table>
+</div>
 
+<p>Four design commitments. Everything else is capture — and the way to get capture right is not to
+think harder about it, but to stop deciding.</p>
+
+<h2>The field that proves the point</h2>
+
+<p>Here is what curation actually costs, from the demo below. Two runs of <code>task_31</code>:</p>
+
+<pre><code>task_31  A    passed=True   steps=1
+task_31  B    passed=False  steps=1   <span class="hit">truncated=True</span></code></pre>
+
+<p>Mode B hit <code>stop_reason: "max_tokens"</code> and stopped mid-task. Under the original schema
+— which logged no <code>stop_reason</code> — that reads as <strong>“Mode A recovered a task Mode B
+lost.”</strong> A fabricated finding, in the write-up's headline table, pointing the wrong
+direction.</p>
+
+<div class="callout warn">
+  <span class="label">And it is not random noise — it is directional</span>
+  <p>Mode B takes more steps → accumulates more tokens → is <em>more likely</em> to truncate. So the
+  artifact systematically penalises the arm under study. That is a confound living inside the trace
+  design, and nothing in the aggregate would have revealed it.</p>
+  <p>Three more in the same family, all cheap to capture and all previously dropped:
+  <code>usage</code> (an entire cost axis), the assistant's <code>content</code> blocks (where
+  “why did it restore?” actually lives), and the driver's verbatim <code>db_error</code> rather than
+  a summarised reason string.</p>
+</div>
+
+<h2>The record</h2>
+
+<pre><code><span class="cmt">// header — the four commitments plus everything else about the run</span>
+{"type":"run","task_id":"task_19","mode":"B","system_sha":"a1b2c3d4e5f6",
+ "tools_sha":"9f8e7d6c5b4a","system":"...","tools":[...],
+ "model":"claude-opus-5","effort":"high","thinking":"adaptive",
+ "disable_parallel_tool_use":true,"max_steps":30,"guard":"allowlist-v1"}
+
+<span class="cmt">// step — the whole API response, plus whatever the harness saw</span>
+{"type":"step","n":3,"ts":1786...,"event":"execute_sql",
+ "llm_ms":2050,"db_ms":0.28,"depth":1,
+ <span class="ok">"stop_reason":"tool_use",</span>
+ <span class="ok">"usage":{"input_tokens":3610,"output_tokens":66,"cache_read_input_tokens":0},</span>
+ <span class="ok">"content":[{"type":"text","text":"Three rows changed — I expected one."},</span>
+ <span class="ok">           {"type":"tool_use","name":"execute_sql"}],</span>
+ "sql":"SELECT * FROM `Statistics` WHERE `Team`='Rams'","rowcount":3,
+ "db_error":null,"db_warnings":[]}
+
+<span class="cmt">// result</span>
 {"type":"result","task_id":"task_19","mode":"B","passed":true,"steps_used":7,
- "hash_got":"[('6e5be...',)]","hash_want":"[('6e5be...',)]"}</code></pre>
+ "error":null,"hash_got":"[('6e5be...',)]","hash_want":"[('6e5be...',)]"}</code></pre>
 
-<div class="callout">
-  <span class="label">Two rules that are easy to get wrong</span>
-  <p><strong>Store events, derive counters.</strong> Don't write a <code>restores: 2</code> field —
-  count <code>restore</code> events at analysis time. A stored counter can disagree with the events
-  it summarises; a derived one cannot.</p>
-  <p><strong>Flush every line.</strong> A run that dies at step 19 of 30 should still leave 19
-  analysable lines. Buffered writes turn a partial result into no result.</p>
-</div>
+<p>Two rules survive the rewrite, and one is new:</p>
+
+<ul>
+  <li><strong>Store events, derive counters.</strong> Never write <code>restores: 2</code> — count
+      the events. A stored counter can disagree with what it summarises.</li>
+  <li><strong>Flush every line.</strong> A run that dies at step 19 of 30 must leave 19 analysable
+      lines. <code>summarize()</code> reports <code>complete: false</code> when the result record is
+      missing, so a crash is visible rather than silently scored.</li>
+  <li><strong>New — add fields freely.</strong> <code>step(**observed)</code> takes arbitrary
+      keyword arguments and writes them through. Nothing downstream breaks when you add one, which
+      is what makes “capture everything” a habit rather than an intention.</li>
+</ul>
 
 <h2>Run it</h2>
 
 <pre><code>uv run python assets/trace.py     <span class="cmt"># synthetic data, no API calls</span></code></pre>
 
-<pre><code>task     mode  pass   steps  ckpt  rest  rej  depth   llm_ms   db_ms
---------------------------------------------------------------------
-task_04  A     True       2     0     0    0      0     3750    0.43
-task_04  B     True       2     0     0    0      0     3750    0.43
-task_19  A     <span class="hit">False</span>      2     0     0    0      0     3900    0.57
-task_19  B     <span class="ok">True</span>       7     1     1    1      1    14500    2.01
+<pre><code>controls: {'A': 'stable', 'B': 'stable'}
+paired: 2   discordant: 1
+dropped as harness artifacts: <span class="hit">[('task_31', 'B')]</span>
 
-Paired tasks: 2   discordant: 1
 <span class="ok">Checkpointing recovered: ['task_19']</span>
 Mode A won where B lost:  none
 
-Mechanism share of wall clock: 3.44 ms db / 25900 ms llm = <span class="ok">0.0133%</span>
-
 Named case — task_19, Mode B:
-   1. checkpoint -> depth 1
-   2. ran     UPDATE `Statistics` SET `Wins`='12' WHERE `Team`='Ra  (rows=3)
-   3. ran     SELECT * FROM `Statistics` WHERE `Team`='Rams'  (rows=3)
-   4. RESTORE    -> depth 1   (undid the previous attempt)
-   5. REJECTED CREATE INDEX idx ON `Statistics` (`Team`(8))  — CREATE is not permitted
-   6. ran     UPDATE `Statistics` SET `Wins`='12' WHERE `Team`='Ra  (rows=1)
-   7. commit</code></pre>
+   1. CHECKPOINT -> depth 1
+         <span class="ok">"Checkpointing before I try this."</span>
+   2. ran      UPDATE `Statistics` SET `Wins`='12' WHERE `Team`='  (rows=3)
+   3. ran      SELECT * FROM `Statistics` WHERE `Team`='Rams'  (rows=3)
+         <span class="ok">"Three rows changed — I expected one. Checking."</span>
+   4. RESTORE  -> depth 1
+         <span class="ok">"Wrong — the predicate is too broad. Undoing."</span>
+   5. REJECTED CREATE INDEX idx ON `Statistics` (`Team`(8 — CREATE is not permitted
+   6. ran      UPDATE ... WHERE `Team`='Rams' AND `Year`='2019'  (rows=1)
+         <span class="ok">"Adding Year to the predicate."</span>
+   7. commit_final_answer</code></pre>
 
 <div class="callout check">
-  <span class="label">That last block is the deliverable</span>
-  <p>“Checkpointing enabled recovery in case 19: the agent's first <code>UPDATE</code> matched three
-  rows instead of one, it inspected, restored, and re-ran with a narrower predicate.” That paragraph
-  is <em>generated from the trace</em>, not reconstructed from memory — and no aggregate could have
-  produced it.</p>
-  <p><strong>The data is synthetic.</strong> No model was called. It exists to show the schema is
-  sufficient, not to report a result.</p>
+  <span class="label">The quoted lines are the difference</span>
+  <p>The original narration showed <em>what</em> the agent did. This one shows <em>why</em>, in the
+  agent's own words, because the assistant's text blocks are now captured. That paragraph is the
+  deliverable — and it was unreachable under the curated schema, not because anyone decided to
+  exclude reasoning, but because nobody listed it as a claim.</p>
+  <p><strong>Synthetic data.</strong> No model was called. It shows the schema is sufficient, not a
+  result.</p>
 </div>
 
 <h2>Check yourself</h2>
@@ -138,40 +174,40 @@ Named case — task_19, Mode B:
 <div class="quiz">
   <p class="quiz-q"><span class="num">Q1</span>You log exactly <code>(step, sql, response, latency)</code>. Which claim can you <em>not</em> make?</p>
   <ul class="quiz-opts">
-    <li data-correct data-why="It needs mode and passed, neither of which is in the list. Every other option is answerable from those four fields — which is what makes the gap easy to miss: the list looks complete because it covers everything Mode A does.">Which specific task checkpointing rescued</li>
-    <li data-why="latency covers this, though it merges the database call with the model call — a separate problem.">How long each statement took</li>
+    <li data-correct data-why="It needs mode and passed, neither in the list. Every other option is answerable from those four fields — which is what makes the gap easy to miss: the list looks complete because it covers everything Mode A does.">Which specific task checkpointing rescued</li>
+    <li data-why="latency covers this, though merging the database call with the model call is a separate problem.">How long each statement took</li>
     <li data-why="sql covers this directly.">What SQL the agent sent</li>
-    <li data-why="step covers this — counting records gives you steps used.">How many steps were used</li>
+    <li data-why="step covers this — counting records gives steps used.">How many steps were used</li>
   </ul>
 </div>
 
 <div class="quiz">
   <p class="quiz-q"><span class="num">Q2</span>“Cases where checkpointing enabled recovery” requires:</p>
   <ul class="quiz-opts">
-    <li data-correct data-why="Recovery is a per-task comparison: B passed where A failed. That needs both runs of the same task, keyed and paired — which is also the only comparison the exact paired test in Reference 02 can use.">Paired per-task outcomes across modes</li>
-    <li data-why="An aggregate says B scored higher. It cannot name which task, which is exactly what the deliverable asks for.">An aggregate pass rate difference</li>
+    <li data-correct data-why="Recovery is a per-task comparison: B passed where A failed. That needs both runs of one task, keyed and paired — the only comparison the exact paired test in Reference 02 can use.">Paired per-task outcomes across modes</li>
+    <li data-why="An aggregate says B scored higher. It cannot name which task, which is what the deliverable asks for.">An aggregate pass rate difference</li>
     <li data-why="Latency is a cost measurement. It says nothing about which tasks were rescued.">The median latency per mechanism</li>
-    <li data-why="Restores count exploration attempts, not successes — the agent may restore on tasks it fails anyway.">A count of total restores</li>
+    <li data-why="Restores count attempts, not successes — the agent may restore on tasks it fails anyway.">A count of total restores</li>
   </ul>
 </div>
 
 <div class="quiz">
-  <p class="quiz-q"><span class="num">Q3</span>You omit <code>depth</code>. Which claim becomes unsupportable?</p>
+  <p class="quiz-q"><span class="num">Q3</span>A Mode B run truncates at <code>max_tokens</code> and scores as failed. Without <code>stop_reason</code> you:</p>
   <ul class="quiz-opts">
-    <li data-correct data-why="Flat restore was chosen on the argument that it removes convenience rather than reachability. Depth is what turns that from an argument into a measurement: if depth never exceeds 1, multi-level backtracking was never reachable and the cut forfeited nothing.">That multi-level backtracking never bound</li>
-    <li data-why="Rejection events cover that, independent of depth.">That the guard blocked nothing</li>
-    <li data-why="db_ms covers restore latency. Depth is about branch structure, not cost.">That restore stayed reliably submillisecond</li>
-    <li data-why="The run header covers configuration. Depth is a per-step property.">That both modes shared prompts</li>
+    <li data-correct data-why="It enters the results as a genuine Mode A win. And it is directional, not random: Mode B takes more steps, accumulates more tokens, and truncates more often — so the artifact systematically penalises the arm under study.">Record a harness artifact as evidence</li>
+    <li data-why="A truncated run and a wrong answer produce the same score. The score cannot distinguish them.">Detect it from the low score</li>
+    <li data-why="The hash describes end state. A truncated run and a genuinely wrong one can hash identically.">Recover it from the final hash</li>
+    <li data-why="A truncation can happen on step 1 or step 20. Step count carries no signal about it.">See it in the step count</li>
   </ul>
 </div>
 
 <div class="quiz">
-  <p class="quiz-q"><span class="num">Q4</span>Designing a trace forward — logging whatever is convenient — produces:</p>
+  <p class="quiz-q"><span class="num">Q4</span>The right division between the raw log and the agreed fields is:</p>
   <ul class="quiz-opts">
-    <li data-correct data-why="Forward design optimises for what is easy to emit, which is uncorrelated with what analysis needs. The result is usually both bloated and insufficient: lots of fields, and still missing the one that would have answered the question.">Data you cannot analyze later</li>
-    <li data-why="That is what backward design produces. Forward design has no mechanism for minimality.">A minimal and sufficient record</li>
-    <li data-why="Only by luck. Nothing in forward design connects the fields to the questions.">Exactly the fields analysis needs</li>
-    <li data-why="File size is irrelevant at 40 tasks, and buying it by dropping fields is the expensive trade.">Smaller files and faster writes</li>
+    <li data-correct data-why="Capture is cheap and irreversible-if-skipped; derivation is free and repeatable. Keeping them separate means a question you think of after the run is a new function over existing logs rather than a re-run.">Capture everything, derive the agreed fields</li>
+    <li data-why="That is the curated schema this lesson was rewritten to reject — it forecloses every unanticipated question.">Capture the agreed fields, derive nothing</li>
+    <li data-why="Storing computed counters alongside raw lets the two disagree. Derive them every time instead.">Capture everything, store computed counters too</li>
+    <li data-why="Selective capture is the decision that cannot be undone. Whatever you skip is not derivable later.">Capture selectively, derive whatever remains possible</li>
   </ul>
 </div>
 
@@ -180,44 +216,51 @@ Named case — task_19, Mode B:
   <ul class="quiz-opts">
     <li data-correct data-why="The decision not to log is a decision not to answer — it just doesn't feel like one at the time, because the cost lands weeks later when re-running means another day and another slice of API budget.">A question you silently declined</li>
     <li data-why="Write cost is negligible here. Framing omission as optimisation is how the gap gets rationalised.">A performance optimization worth making</li>
-    <li data-why="Aggregates are strictly less information than the events they summarise — you cannot recover a per-task event sequence from a score.">Recoverable from the aggregate scores</li>
-    <li data-why="The final hash is one value describing end state. It says nothing about the path taken to reach it.">Reconstructible from the final hash</li>
+    <li data-why="Aggregates are strictly less information than the events they summarise.">Recoverable from the aggregate scores</li>
+    <li data-why="The final hash is one value describing end state. It says nothing about the path taken.">Reconstructible from the final hash</li>
   </ul>
 </div>
 
 <h2>What to do with it</h2>
 
-<p>Read <a href="../assets/trace.py"><code>assets/trace.py</code></a> and lift
-<code>TraceWriter</code>, <code>summarize</code> and <code>compare_modes</code> into
-<code>src/dbagent/</code>. It is under 150 lines and the analysis functions are one per write-up
-sentence — <code>compare_modes</code> literally returns the deliverable's answer.</p>
+<p>Lift <code>TraceWriter</code>, <code>summarize</code>, <code>compare_modes</code>,
+<code>check_controls</code> and <code>narrate</code> from
+<a href="../assets/trace.py"><code>assets/trace.py</code></a> into <code>src/dbagent/</code>. Note
+what <code>compare_modes</code> now does: it excludes truncated, refused and incomplete runs from
+the comparison and <em>reports them separately</em>, rather than scoring them.</p>
 
-<p>One habit worth keeping past this project: <strong>write the analysis script before the run.</strong>
-If it executes end-to-end against synthetic data, the schema is sufficient. If it needs a field you
-didn't plan to log, you have found that out for free instead of after burning the run.</p>
+<p>Two habits worth keeping past this project:</p>
+
+<ul>
+  <li><strong>Write the analysis before the run.</strong> If it executes end-to-end on synthetic
+      data, the schema is sufficient. If it needs a field you didn't plan to log, you found out for
+      free.</li>
+  <li><strong>Then log more than the analysis needs anyway</strong> — because the analysis you
+      wrote is, by construction, only the analysis you already thought of.</li>
+</ul>
 
 <h3>Primary source</h3>
-<p>Re-read your own <code>CLAUDE.md</code> § Experiment hygiene, specifically: “Aggregate numbers
-alone will not answer ‘cases in which checkpointing enables recovery that linear execution cannot’ —
-that requires naming specific tasks.” You wrote the requirement correctly and then under-specified
-the instrument, which is the most common way this failure happens. It is worth seeing the shape of
-it in your own writing rather than in someone else's paper.</p>
+<p>Re-read <code>CLAUDE.md</code> § Experiment hygiene: “Failure analysis comes from reading traces,
+not from terminal output.” You wrote <em>reading traces</em> — not <em>reading summaries</em>. The
+original version of this lesson quietly turned your traces into summaries and kept your sentence.
+Worth noticing how easily a correct requirement survives an instrument that no longer serves it.</p>
 
 <div class="footer">
   <h3>Carry forward</h3>
   <ul class="next-links">
-    <li><a href="../assets/trace.py"><code>assets/trace.py</code></a> — writer plus one analysis function per claim</li>
+    <li><a href="../reference/trace-schema.html">Reference 06 — Trace Schema</a> (rewritten to match)</li>
+    <li><a href="../assets/trace.py"><code>assets/trace.py</code></a></li>
     <li><a href="../reference/experiment-design-checklist.html">Reference 02</a> · <a href="../reference/restore-cost.html">Reference 03</a> · <a href="../reference/tool-boundary.html">Reference 05</a></li>
-    <li>You now have every piece except the agent loop itself: a verified scorer, a chosen mechanism with measured costs, a guard, and a trace schema. Next is assembling them.</li>
   </ul>
 
   <div class="ask">
     <span class="label">Ask your teacher</span>
-    <p>The contestable choice here is <strong>one file per (task, mode)</strong> rather than one file
-    per task with a mode field, or one file for the whole run. I picked it because a crashed or
-    re-run mode doesn't corrupt the other arm, and because pairing is a filename join. But it makes
-    “read one task's two runs side by side” a two-file operation, which is exactly what you'll be
-    doing during failure analysis. Argue it before you write the writer.</p>
+    <p>Open question the rewrite created: <strong>what belongs in the raw log that I still haven't
+    thought of?</strong> That question has no closed-form answer, which is the point — but there is
+    a cheap test. Take the three most surprising things an agent could plausibly do on these tasks
+    (issue the same statement twice, restore without having checkpointed, commit with an empty
+    table) and ask whether the current record would let you <em>see</em> it happen. Anything that
+    fails that test is a field.</p>
   </div>
 </div>
 
