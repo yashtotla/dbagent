@@ -1,0 +1,116 @@
+<title>Reference — Experiment Design Checklist</title>
+<link rel="stylesheet" href="../assets/lesson.css">
+
+<p class="eyebrow">dbagent · reference 02</p>
+<h1>Experiment Design Checklist</h1>
+<p class="standfirst">Run this before every measurement, not once at the start. All findings
+below were verified on this repo against MySQL 8.4.11 — none are hypothetical.</p>
+
+<h2>Gate 1 · Is the instrument calibrated?</h2>
+
+<p>Never measure an agent with an unverified scorer. Run the gold answers through the scorer
+first; if it cannot score a known-correct answer correctly, nothing downstream means anything.</p>
+
+<pre><code>uv run python assets/milestone0.py     <span class="cmt"># must print 40/40</span></code></pre>
+
+<div class="table-wrap">
+<table>
+  <thead><tr><th>Trap</th><th>Symptom</th><th>Fix</th></tr></thead>
+  <tbody>
+    <tr>
+      <td><strong>Driver repr mismatch</strong></td>
+      <td>Correct MD5, <strong>0/40 pass</strong>. <code>[('ab',)]</code> vs <code>(('ab',),)</code></td>
+      <td><code>str(list(cur.fetchall()))</code>. Compare strings; never parse.</td>
+    </tr>
+    <tr>
+      <td><strong><code>group_concat_max_len</code></strong></td>
+      <td>Wrong hash, <em>no error, no warning</em></td>
+      <td>Real but latent here — tables are 12–44 rows, truncation starts ≈170. Note it; do not fix what does not bite.</td>
+    </tr>
+    <tr>
+      <td><strong>Unbackticked identifiers</strong></td>
+      <td>Syntax errors on <code>School Location Table</code>, <code>Date moved</code></td>
+      <td>Backtick every table and column name. All columns are <code>TEXT</code>.</td>
+    </tr>
+    <tr>
+      <td><strong>Wrong gold field</strong></td>
+      <td><code>KeyError: 'sql'</code> on modification tasks</td>
+      <td>Gold SQL is in <code>label</code>. <code>sql</code> is absent on all 40.</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+<p><strong>Baseline established:</strong> 40/40 · tables 12–44 rows · gold SQL median 0.92 ms.
+That last number is the denominator — a checkpoint mechanism costing more than a millisecond
+dominates the work it protects.</p>
+
+<h2>Gate 2 · Is exactly one thing varying?</h2>
+
+<div class="table-wrap">
+<table>
+  <thead><tr><th>Variable</th><th>Status</th><th>Control</th></tr></thead>
+  <tbody>
+    <tr><td>Checkpoint mechanism</td><td>Under study</td><td>—</td></tr>
+    <tr><td>Model id, prompt text, task order, <code>max_steps</code>, temperature</td>
+        <td>Hold fixed</td><td>Pin the exact model snapshot; log it per run</td></tr>
+    <tr><td>Tool schema · system-prompt length</td>
+        <td><strong>Unavoidably differs</strong></td>
+        <td><strong>Placebo mode A′</strong> — Mode B's schema and prompt, no-op checkpoint/restore</td></tr>
+    <tr><td>Productive step budget</td><td>Differs</td>
+        <td>Budget productive steps separately, or report both counts</td></tr>
+    <tr><td>Action-space guard (DDL + txn-control)</td><td>Must not differ</td>
+        <td>Same guard in <strong>both</strong> modes. Free: 0/40 gold labels contain either.</td></tr>
+    <tr><td>Connection lifetime</td><td>Differs</td>
+        <td>One connection held open per task in both modes</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p><strong>A′ − A</strong> = the cost of merely mentioning checkpointing.
+<strong>B − A′</strong> = the mechanism itself. Without A′, those two are fused and the headline
+claim is unsupported.</p>
+
+<h2>Gate 3 · Can the number carry the claim?</h2>
+
+<p>The design is <em>paired</em> — both modes run the same 40 tasks — so only <strong>discordant</strong>
+tasks carry information. Exact paired (McNemar) test:</p>
+
+<div class="table-wrap">
+<table>
+  <thead><tr><th>B wins</th><th>A wins</th><th>Two-sided p</th><th>Reportable</th></tr></thead>
+  <tbody>
+    <tr><td>6</td><td>0</td><td>0.031</td><td>Yes</td></tr>
+    <tr><td>5</td><td>0</td><td>0.063</td><td>No</td></tr>
+    <tr><td>4</td><td>0</td><td>0.125</td><td>No</td></tr>
+    <tr><td>3</td><td>1</td><td>0.625</td><td>No</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p>Threshold: about <strong>six clean flips in one direction</strong>. Below that, say so, and
+shift the write-up's weight onto the mechanism argument and the cost measurements — neither
+depends on N.</p>
+
+<h2>Gate 4 · Are the limits stated?</h2>
+
+<p>Write these down before a reviewer asks. Naming limits is evidence you understand the result.</p>
+
+<ul>
+  <li>40 tasks · one benchmark · one model · one schema shape</li>
+  <li>Single table, all columns <code>TEXT</code>, 12–44 rows</li>
+  <li>No multi-table transactions, no concurrency, no large data</li>
+  <li>Single-connection agent; nothing here speaks to what other observers see
+      (the paper's open challenge #1)</li>
+  <li>Named recovery cases matter more than aggregates — cite specific task ids from
+      <code>runs/&lt;task_id&gt;.jsonl</code>, not just totals</li>
+</ul>
+
+<div class="footer">
+  <h3>Related</h3>
+  <ul class="next-links">
+    <li><a href="../lessons/0002-calibrate-the-instrument.html">Lesson 02 — Calibrate the instrument</a></li>
+    <li><a href="mysql-transaction-boundaries.html">Reference 01 — MySQL Transaction Boundaries</a></li>
+    <li><a href="../assets/milestone0.py"><code>assets/milestone0.py</code></a></li>
+  </ul>
+</div>

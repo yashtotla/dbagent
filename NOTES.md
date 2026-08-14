@@ -43,9 +43,31 @@
   this category?" beat rather than trusting the single worked example to generalise.
   See [[learning-records/0002-ddl-guard-is-necessary-but-not-sufficient.md]].
 
-## Lesson 02 — decided
+## Lesson 02 — shipped
 
-Experiment design, using the confound Yash's own conclusion just created: guarding the agent's
-action space in Mode B but not Mode A adds a second variable. Live exercise is Milestone 0
-(40/40 gold-SQL hash check) — real project work, not a toy. Container `dbbench-mysql` is already
-running (MySQL **8.4.11**, not 8.0).
+Experiment design, built around Milestone 0 as the live exercise. Ran it before writing, which
+turned out to matter: the scorer failed **40/40 on correct SQL** because `pymysql` returns a
+tuple where AgentBench's driver returned a list, and `answer_md5` is a compared-verbatim repr
+string. Real finding, not a constructed example — the lesson is much stronger for it.
+
+Verified results now available to the project (all on MySQL 8.4.11):
+
+- Milestone 0: **40/40** with `str(list(cur.fetchall()))`
+- `group_concat_max_len`: default and 1 MB both 40/40; forced to 64 → silent wrong hash.
+  Tables are 12–44 rows, truncation starts ≈170. **Bug is real, latent, non-binding.**
+- Gold SQL exec: **median 0.92 ms** — the denominator for any checkpoint-cost claim
+- 0/40 gold labels contain DDL or transaction-control keywords; all 40 are single statements
+
+`assets/milestone0.py` is the runnable artifact. `build_table()` and `hash_table()` are written
+to be lifted into `src/dbagent/` as Yash's own project code.
+
+## Lesson 03 — planned
+
+Measuring restore cost honestly: what to time, what to exclude (process spawn, connection
+setup), how many repetitions, and placing `SAVEPOINT` against the paper's seconds-scale table.
+Natural follow-on since lesson 02 established 0.92 ms as the denominator.
+
+**Open teaching thread:** the placebo mode (A′) is the lesson's strongest methods claim and also
+the most likely thing Yash cuts for time. Lesson 02 deliberately invites him to argue it rather
+than accept it. If he defends cutting it, that reasoning belongs in the write-up's limitations —
+do not let him drop it silently.

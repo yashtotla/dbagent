@@ -1,0 +1,250 @@
+<title>Lesson 02 — Calibrate the instrument before you trust the number</title>
+<link rel="stylesheet" href="../assets/lesson.css">
+
+<p class="eyebrow">dbagent · lesson 02 · ~15 minutes</p>
+<h1>Calibrate the instrument before you trust the number</h1>
+<p class="standfirst">Your spec calls Milestone 0 the thing to do “before anything else.” It is
+right, and for a sharper reason than it says: I ran it, and the scorer failed all 40 tasks on
+SQL that was perfectly correct.</p>
+
+<h2>Why this one</h2>
+
+<p>You are about to produce a number — Mode A scores <em>x</em>, Mode B scores <em>y</em> — and
+build a write-up on the gap between them. Two things can make that gap meaningless, and neither
+announces itself:</p>
+
+<ol>
+  <li><strong>The instrument is miscalibrated.</strong> The scorer disagrees with ground truth
+      for reasons having nothing to do with the agent.</li>
+  <li><strong>The instrument is fine but you varied more than one thing.</strong> The gap is
+      real and measures something other than what you claim.</li>
+</ol>
+
+<p>Milestone 0 kills the first. The second needs an argument, and most of this lesson.</p>
+
+<div class="recall">
+  <span class="label">Before you read on — retrieval practice</span>
+  <p>You wrote in <code>CLAUDE.md</code>: “hold everything else fixed: same model, same prompts,
+  same task order, same max_steps, same temperature. Only the checkpoint mechanism varies.”
+  From memory: name everything <em>else</em> that will differ between your Mode A and Mode B
+  runs. Thirty seconds.</p>
+  <details>
+    <summary>Now compare</summary>
+    <p>There are at least four beyond your list, and one of them is unavoidable by
+    construction — you cannot hold it fixed, only measure around it. Section “What else is in
+    this category?” below.</p>
+  </details>
+</div>
+
+<h2>What Milestone 0 actually caught</h2>
+
+<p>Three findings from one run. The first is the one that would have cost you a weekend.</p>
+
+<h3>1 · The scorer failed 40/40 on correct SQL</h3>
+
+<pre><code>FAIL #34 [UPDATE] Basketball Tournament Results
+  want <span class="ok">[('6e5be5df6a81c825cba000c75965d27f',)]</span>
+  got  <span class="hit">(('6e5be5df6a81c825cba000c75965d27f',),)</span></code></pre>
+
+<p>The MD5s are <strong>identical</strong>. The gold SQL was right, the hash was right, the
+table state was right. AgentBench built <code>answer_md5</code> with
+<code>str(cursor.fetchall())</code> on a driver whose <code>fetchall()</code> returns a
+<strong>list</strong>; <code>pymysql</code> returns a <strong>tuple</strong>. Same bytes,
+different <code>repr</code>, string comparison fails, everything fails.</p>
+
+<pre><code><span class="cmt"># the entire fix</span>
+return str(<span class="ok">list(</span>cur.fetchall()<span class="ok">)</span>)</code></pre>
+
+<div class="callout warn">
+  <span class="label">Sit with this one</span>
+  <p>A scorer that reports <strong>0%</strong> for a perfect agent is not obviously broken —
+  it looks like a hard benchmark. Had you built the agent first and run the scorer second, the
+  natural reading of 0/40 is “the model is bad at this,” and you would have spent the weekend
+  tuning prompts against an instrument that could never return a pass. Milestone 0 is not
+  bookkeeping. It is the difference between a result and a wasted weekend.</p>
+</div>
+
+<h3>2 · The <code>group_concat</code> bug is real, and does not bite</h3>
+
+<p>Your spec flags <code>group_concat_max_len</code> as “a latent correctness bug in the
+reference scorer — worth confirming.” Confirmed, both directions:</p>
+
+<div class="table-wrap">
+<table>
+  <thead><tr><th><code>group_concat_max_len</code></th><th>Result</th><th>Reading</th></tr></thead>
+  <tbody>
+    <tr><td>default (1024)</td><td>40/40</td><td rowspan="2">Identical. Not binding here.</td></tr>
+    <tr><td>1 048 576</td><td>40/40</td></tr>
+    <tr><td>64 <em>(forced)</em></td><td><strong>wrong hash, no error</strong></td>
+        <td>The failure is real and <strong>silent</strong> when reached.</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p>Measured table sizes: <strong>min 12 rows, max 44</strong>. At 5 chars + 1 separator per row,
+truncation begins around 170 rows — a 4× margin. So: the bug exists, it is silent, and this
+dataset does not reach it. That sentence is worth more in a write-up than either half alone,
+because it shows you checked rather than assumed.</p>
+
+<h3>3 · Gold SQL executes in ~0.9 ms</h3>
+
+<p>Median across 40 tasks. Useful as your denominator: any checkpoint mechanism costing more
+than a millisecond is already dominating the work it protects.</p>
+
+<h2>Run it yourself</h2>
+
+<p>The script is in the workspace at <a href="../assets/milestone0.py"><code>assets/milestone0.py</code></a>.
+Read it first — it is about 100 lines and the two functions worth stealing for
+<code>src/dbagent/</code> are <code>build_table()</code> and <code>hash_table()</code>.</p>
+
+<pre><code>uv run python assets/milestone0.py              <span class="cmt"># expect 40/40</span>
+uv run python assets/milestone0.py 64           <span class="cmt"># force the truncation bug</span></code></pre>
+
+<pre><code>Milestone 0 [group_concat_max_len=default]: <span class="ok">40/40</span> match answer_md5
+rows per table: min=12 max=44 — group_concat truncates above ~170 rows
+gold SQL exec: median 0.92 ms</code></pre>
+
+<div class="callout check">
+  <span class="label">Milestone 0 is now green</span>
+  <p>Your scorer agrees with the benchmark's ground truth on all 40 modification tasks.
+  Downstream numbers are now allowed to mean something.</p>
+</div>
+
+<h2>Check yourself</h2>
+
+<div class="quiz">
+  <p class="quiz-q"><span class="num">Q1</span>Your scorer computes the correct MD5, yet every task fails. Most likely cause?</p>
+  <ul class="quiz-opts">
+    <li data-correct data-why="Exactly what happened here. answer_md5 is a Python repr string, and pymysql's tuple reprs differently from the list the benchmark's driver returned. Compare strings, but make sure you are comparing the same kind of container.">A repr mismatch between drivers</li>
+    <li data-why="Sort order would change the MD5 itself. Here the MD5 was byte-identical — the mismatch was outside the hash.">A wrong group_concat sort order</li>
+    <li data-why="An uncommitted transaction would change which rows are visible, and therefore the MD5. The MD5 matched.">An uncommitted transaction hiding rows</li>
+    <li data-why="Encoding problems would alter the hashed bytes and thus the MD5. The MD5 was correct.">A character encoding mismatch somewhere</li>
+  </ul>
+</div>
+
+<div class="quiz">
+  <p class="quiz-q"><span class="num">Q2</span><code>group_concat_max_len</code> is set too small for the table. What happens?</p>
+  <ul class="quiz-opts">
+    <li data-correct data-why="Verified by forcing it to 64: the hash came back wrong with no error and no warning surfaced to the client. Silent wrong answers are the worst class of bug in a scorer, because the number still looks like a number.">Silently truncates, producing wrong hash</li>
+    <li data-why="No error is raised to the client. That silence is precisely what makes it dangerous.">Raises an explicit error immediately</li>
+    <li data-why="There is no fallback. The concatenation is simply cut short at the limit.">Falls back to unlimited length</li>
+    <li data-why="Nothing blocks or grows. The result is truncated and returned as if correct.">Blocks until the buffer grows</li>
+  </ul>
+</div>
+
+<div class="quiz">
+  <p class="quiz-q"><span class="num">Q3</span>Mode B's agent is handed two extra tools. Across your A/B comparison you are therefore varying:</p>
+  <ul class="quiz-opts">
+    <li data-correct data-why="Extra tools mean a longer system prompt and a different action space, both of which change model behaviour independently of whether checkpointing helps. This confound is unavoidable by construction — you can only measure around it.">The mechanism and the prompt</li>
+    <li data-why="That is the intent, not the reality. The tool schema and system prompt necessarily differ too.">Only the checkpoint mechanism itself</li>
+    <li data-why="The step budget is one affected variable, but not the only one — the prompt changes as well.">Only the agent's step budget</li>
+    <li data-why="Considerably more than the transaction boundary changes once you add tools to the schema.">Nothing beyond the transaction boundary</li>
+  </ul>
+</div>
+
+<div class="quiz">
+  <p class="quiz-q"><span class="num">Q4</span>What separates the prompt effect from the mechanism effect?</p>
+  <ul class="quiz-opts">
+    <li data-correct data-why="A placebo mode: identical tool schema and system prompt to Mode B, but checkpoint and restore are no-ops that always report success. A′ minus A isolates the prompt effect; B minus A′ isolates the mechanism. Cheap to build and it is the single strongest methods move available to you here.">A placebo mode with no-op tools</li>
+    <li data-why="More tasks tighten the confidence interval but cannot separate two variables that move together in every run.">A larger sample of benchmark tasks</li>
+    <li data-why="Fixing temperature removes sampling noise, which is necessary but does not disentangle prompt from mechanism.">A second model at temperature zero</li>
+    <li data-why="A larger budget changes both arms equally and leaves the confound exactly where it was.">A longer step budget for both</li>
+  </ul>
+</div>
+
+<div class="quiz">
+  <p class="quiz-q"><span class="num">Q5</span>Both modes run the same 40 tasks. The correct analysis is:</p>
+  <ul class="quiz-opts">
+    <li data-correct data-why="A paired design. Tasks both modes pass, or both fail, carry no information about the difference — only discordant tasks do. This is McNemar's test, and pairing is what makes N=40 usable at all.">Paired, comparing only discordant tasks</li>
+    <li data-why="Treating paired runs as independent samples throws away the pairing and badly inflates the interval.">Unpaired, comparing the two proportions</li>
+    <li data-why="Only 40 tasks are in scope; the 20 SELECT-family tasks are excluded by the spec.">Bootstrapped over all sixty tasks</li>
+    <li data-why="Repeated runs address sampling noise, but the comparison across modes is still paired by task.">Averaged across repeated independent runs</li>
+  </ul>
+</div>
+
+<h2>What else is in this category?</h2>
+
+<p>Last session you found the DDL guard yourself, then stopped at DDL — when three of the four
+savepoint killers are not DDL. Same move applies here. Your <code>CLAUDE.md</code> list is
+correct and incomplete:</p>
+
+<div class="table-wrap">
+<table>
+  <thead><tr><th>Variable</th><th>Differs?</th><th>What to do</th></tr></thead>
+  <tbody>
+    <tr><td>Checkpoint mechanism</td><td>Yes — intended</td><td><strong>The variable under study</strong></td></tr>
+    <tr><td>Model, prompt text, task order, max_steps, temperature</td><td>Must not</td><td>Already on your list</td></tr>
+    <tr><td><strong>Tool schema</strong></td><td>Yes, unavoidably</td><td>Placebo mode A′</td></tr>
+    <tr><td><strong>System-prompt length</strong> (describing the tools)</td><td>Yes, unavoidably</td><td>Placebo mode A′</td></tr>
+    <tr><td><strong>Productive step budget</strong> — checkpoint calls consume steps</td><td>Yes</td><td>Budget productive steps, or report both counts</td></tr>
+    <tr><td><strong>Action-space guard</strong> (DDL / txn-control)</td><td>Must not</td><td>Same guard in <em>both</em> modes — verified free, 0/40 gold labels need it</td></tr>
+    <tr><td><strong>Connection lifetime</strong> — Mode B must hold one open</td><td>Yes</td><td>Hold one per task in both modes</td></tr>
+    <tr><td><strong>Model snapshot drift</strong></td><td>Between runs</td><td>Pin the exact model id; record it in the log</td></tr>
+  </tbody>
+</table>
+</div>
+
+<div class="callout">
+  <span class="label">The move worth stealing</span>
+  <p><strong>Mode A′ — the placebo.</strong> Identical tool schema and system prompt to Mode B,
+  but <code>checkpoint()</code> and <code>restore()</code> do nothing and always report success.
+  Then <em>A′ − A</em> is the cost of merely mentioning checkpointing, and <em>B − A′</em> is
+  the mechanism. Two extra runs, no new machinery, and it converts “Mode B scored higher” into
+  a claim about checkpointing specifically. Reviewers who build systems ask for this; getting
+  there first is the difference between a starter task and a research note.</p>
+</div>
+
+<h2>What 40 tasks cannot support</h2>
+
+<p>Because the design is paired, only <strong>discordant</strong> tasks carry signal — the ones
+where the two modes disagree. Everything both modes pass, or both fail, is noise-free and
+information-free. Under the exact paired test:</p>
+
+<div class="table-wrap">
+<table>
+  <thead><tr><th>B wins</th><th>A wins</th><th>Two-sided p</th><th>Reportable?</th></tr></thead>
+  <tbody>
+    <tr><td>6</td><td>0</td><td>≈ 0.031</td><td>Yes</td></tr>
+    <tr><td>5</td><td>0</td><td>≈ 0.063</td><td>No — borderline</td></tr>
+    <tr><td>3</td><td>1</td><td>≈ 0.625</td><td>No — nothing at all</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p>So the honest threshold is roughly <strong>six clean flips in one direction</strong>. Below
+that you have an anecdote, and the correct move is to say so and pivot the write-up's weight
+onto the mechanism argument and the cost measurements — which do not depend on N.</p>
+
+<p>State the rest explicitly, before a reviewer has to: 40 tasks, one benchmark, one model, one
+schema shape (single table, all columns <code>TEXT</code>, 12–44 rows). Nothing here generalises
+to multi-table transactions, large data, or concurrent writers. Naming your limits is not a
+weakness in a write-up; it is the strongest available evidence that you understand your own
+result.</p>
+
+<h3>Primary source</h3>
+<p>Read section 4 of <a href="https://arxiv.org/html/2510.05556v1">Xu et al., “Toward Systems
+Foundations for Agentic Exploration”</a> — the benchmark section, in the HTML rendering. Read
+it specifically for <em>what they held fixed and what they did not</em>, then compare against
+the confound table above. Their Table 1 comparison runs their own system on one model against
+a baseline on another; your <code>CLAUDE.md</code> already flags that as the thing not to
+reproduce. Seeing the flaw in a published paper is the fastest way to stop making it.</p>
+
+<div class="footer">
+  <h3>Carry forward</h3>
+  <ul class="next-links">
+    <li><a href="../reference/experiment-design-checklist.html">Reference 02 — Experiment Design Checklist</a> (print this; run it before every measurement)</li>
+    <li><a href="../reference/mysql-transaction-boundaries.html">Reference 01 — MySQL Transaction Boundaries</a></li>
+    <li><a href="0001-can-a-savepoint-survive-your-agent-loop.html">Lesson 01 — Can a savepoint survive your agent loop?</a></li>
+    <li>Next up: measuring restore cost honestly — what to time, what to exclude, and how to place <code>SAVEPOINT</code> against the paper's seconds-scale table.</li>
+  </ul>
+
+  <div class="ask">
+    <span class="label">Ask your teacher</span>
+    <p>The placebo mode is the part I would push back on if I were reviewing you — it is extra
+    work and you might reasonably decide the weekend does not have room. That is a defensible
+    call, but make it deliberately and write it down. Argue it with me in the session; if you
+    can defend cutting it, that reasoning belongs in the write-up's limitations.</p>
+  </div>
+</div>
+
+<script src="../assets/quiz.js"></script>
