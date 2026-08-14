@@ -49,8 +49,20 @@ identify.</p>
 <p><strong>Strip comments before extracting the verb.</strong> Without it,
 <code>/* c */ DROP TABLE t</code> yields no keyword at all.</p>
 
-<p><strong>Verified free:</strong> 0/40 gold <code>label</code> statements are blocked. All 40 are
-single statements, 20 <code>INSERT</code> and 20 <code>UPDATE</code>.</p>
+<p><strong>Verified free:</strong> 0/40 gold <code>label</code> statements are blocked; all 40 are
+single statements.</p>
+
+<div class="callout">
+  <span class="label">Three modification types, two in this split</span>
+  <p>DBBench's modification family is <strong><code>INSERT</code> / <code>UPDATE</code> /
+  <code>DELETE</code></strong> — AgentBench's <code>task.py</code> branches on the literal tuple
+  <code>("INSERT", "DELETE", "UPDATE")</code> in two places (verified in source).</p>
+  <p>The <em>dev split</em> contains 20 <code>INSERT</code>, 20 <code>UPDATE</code>, and
+  <strong>zero <code>DELETE</code></strong>. Don't let the split's contents stand in for the
+  benchmark's definition: <code>DELETE</code> belongs in the allowlist on the same footing as the
+  other two, and the write-up's scope sentence should read “the dev split contains no DELETE
+  tasks,” not “DBBench modifications are INSERT and UPDATE.”</p>
+</div>
 
 <h2>3 · What the guard rejects, and why</h2>
 
@@ -79,7 +91,47 @@ default — <code>UPDATE t SET a='x'; DROP TABLE t</code> raises
 <code>ProgrammingError (1064)</code>. Verified, but verify it yourself rather than assuming: it
 disappears the moment anyone passes <code>CLIENT.MULTI_STATEMENTS</code>.</p>
 
-<h2>4 · The rejection protocol</h2>
+<h2>4 · Rejected ≠ withheld — the Mode B tool surface</h2>
+
+<p>The agent still needs to checkpoint and restore. It reaches those through <strong>dedicated
+tools</strong>, not raw SQL — the bash-versus-dedicated-tool distinction applied one level in.</p>
+
+<div class="table-wrap">
+<table>
+  <thead><tr><th>Tool</th><th>Mode A</th><th>Mode B</th><th>Harness issues</th></tr></thead>
+  <tbody>
+    <tr><td><code>execute_sql(sql)</code></td><td>✓</td><td>✓</td><td>guard, then execute</td></tr>
+    <tr><td><code>checkpoint()</code></td><td>—</td><td>✓</td><td><code>SAVEPOINT sp_&lt;depth&gt;</code> → handle</td></tr>
+    <tr><td><code>restore(handle)</code></td><td>—</td><td>✓</td><td><code>ROLLBACK TO SAVEPOINT sp_&lt;handle&gt;</code></td></tr>
+    <tr><td><code>commit_final_answer()</code></td><td>✓</td><td>✓</td><td><code>COMMIT</code>, end task</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p>What owning the statement buys:</p>
+
+<ul>
+  <li><strong>Naming.</strong> A reused savepoint name <em>replaces</em> rather than nests
+      (<a href="mysql-transaction-boundaries.html">Reference 01</a>) — an agent writing
+      <code>SAVEPOINT sp1</code> twice silently loses its outer branch. Depth-indexed names must
+      come from the harness.</li>
+  <li><strong>Countable branches.</strong> One structured trace event per checkpoint, versus
+      parsing SQL out of strings. <a href="restore-cost.html">Reference 03</a> shows overhead
+      scales with branches per turn — you can only report that if branching is legible.</li>
+  <li><strong>Handle validation.</strong> Refuse <code>restore(3)</code> when depth 3 is gone,
+      instead of hitting error 1305 mid-branch.</li>
+</ul>
+
+<p><strong>Never needed by the agent:</strong> bare <code>COMMIT</code> (happens once, via
+<code>commit_final_answer</code>) and bare <code>ROLLBACK</code> (discards the whole task —
+“reset to start” is <code>restore(0)</code> against an <code>sp_0</code> taken immediately after
+<code>START TRANSACTION</code>).</p>
+
+<p><strong>Confound note:</strong> Mode B has two extra tools, so its prompt and action space
+differ from Mode A's. That is unavoidable by construction — state it and measure the policy change
+rather than trying to net it out. See <a href="experiment-design-checklist.html">Reference 02</a>.</p>
+
+<h2>5 · The rejection protocol</h2>
 
 <ol>
   <li><strong>Return the reason to the agent</strong> as a tool result. It can then try something
@@ -92,7 +144,7 @@ disappears the moment anyone passes <code>CLIENT.MULTI_STATEMENTS</code>.</p>
       at once. See <a href="experiment-design-checklist.html">Reference 02</a>.</li>
 </ol>
 
-<h2>5 · Tool definition shape</h2>
+<h2>6 · Tool definition shape</h2>
 
 <pre><code>{
   "name": "execute_sql",
@@ -127,7 +179,7 @@ disappears the moment anyone passes <code>CLIENT.MULTI_STATEMENTS</code>.</p>
   run. Verify against the current tool-use docs for whichever model you pin.</p>
 </div>
 
-<h2>6 · Why this is a research point, not plumbing</h2>
+<h2>7 · Why this is a research point, not plumbing</h2>
 
 <p>Anthropic's own agent-design guidance says a <strong>bash tool</strong> gives the harness only
 an opaque command string, whereas promoting an action to a <strong>dedicated tool</strong> gives it

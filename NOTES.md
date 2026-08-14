@@ -164,6 +164,26 @@ Temperature cannot be held fixed because it cannot be set. Replacements are
 with an instruction to verify against the docs for whichever model he pins. **`CLAUDE.md` itself is
 his file on `main` — do not edit it; he decides.**
 
+## Lesson 04 — corrected (same session)
+
+Yash accepted the allowlist argument and then audited its *contents*. Two corrections, both mine:
+
+1. **`DELETE` is a DBBench modification type, not my judgment call.** Verified in AgentBench's
+   `task.py` — branches on `("INSERT", "DELETE", "UPDATE")` in two places. Dev split has 20/20/0.
+   My error: writing "all 40 gold labels are INSERT or UPDATE" (true) and letting it stand in for
+   the benchmark's category definition (false). **A split's contents are not a benchmark's schema.**
+2. **"Doesn't the agent need SAVEPOINT/COMMIT/ROLLBACK?"** Yes — rejecting them routes the
+   capability to `checkpoint()` / `restore(handle)` / `commit_final_answer()`. That's the lesson's
+   own bash-vs-dedicated-tool distinction one level in, and the lesson failed to say so.
+
+Both fixed in place with the correction shown. Added the Mode B tool-surface table to the lesson
+and Reference 05. See [[learning-records/0006-delete-is-a-first-class-modification-type.md]].
+
+**Rules from this:** never present a benchmark-derived constant as a judgment call without checking
+the benchmark's source; and when a guard rejects something the agent plausibly needs, say in the
+same breath where the capability went — a rejection list without its routing table reads as a
+capability list.
+
 ## Lesson 05 — planned
 
 The agent loop: tool schemas that make branching legible in the trace, and logging that can

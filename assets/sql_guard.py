@@ -29,12 +29,28 @@ import re
 _COMMENT = re.compile(r"/\*.*?\*/|--[^\n]*|#[^\n]*", re.S)
 _LEADING = re.compile(r"\s*([A-Za-z_]+)")
 
-# What the agent is permitted to send. Reads plus the two verbs the tasks need,
-# plus DELETE so a modification task can correct itself within a branch.
+# What the agent is permitted to send.
+#
+# INSERT / UPDATE / DELETE are DBBench's three modification types -- verified in
+# AgentBench's task.py, which branches on the literal tuple ("INSERT", "DELETE",
+# "UPDATE") in two places. The dev split happens to contain only INSERT (20) and
+# UPDATE (20) and zero DELETE, but that is a property of this split, not of the
+# benchmark. DELETE belongs here on the same footing as the other two.
+#
+# Reads are included so the agent can inspect state mid-branch, which is the
+# whole point of exploration.
 ALLOWED = frozenset({
     "SELECT", "INSERT", "UPDATE", "DELETE",
     "SHOW", "DESCRIBE", "DESC", "EXPLAIN",
 })
+
+# NOT here, and deliberately: SAVEPOINT, ROLLBACK, COMMIT, BEGIN, START.
+# The agent still needs those capabilities in Mode B -- it reaches them through
+# dedicated checkpoint() / restore() / commit_final_answer() tools instead of
+# through raw SQL. Routing them through typed tools rather than an opaque string
+# lets the harness own savepoint naming (reusing a name REPLACES rather than
+# nests), emit one countable branch event per checkpoint, and validate a restore
+# handle before issuing it. See reference/tool-boundary.html.
 
 
 def leading_keyword(sql: str) -> str:
@@ -77,12 +93,12 @@ CASES = [
     ("TRUNCATE TABLE t", False, "DDL"),
     ("/* harmless */ DROP TABLE t", False,
      "comment-prefixed DDL: defeats a blocklist, fails closed against an allowlist"),
-    ("COMMIT", False, "ends the transaction, deleting every savepoint"),
-    ("ROLLBACK", False, "bare rollback deletes every savepoint; restore has its own tool"),
+    ("COMMIT", False, "routed to commit_final_answer(), not withheld"),
+    ("ROLLBACK", False, "bare rollback discards the whole task; restore(0) is the tool"),
     ("BEGIN", False, "implicitly commits first"),
     ("START TRANSACTION", False, "implicitly commits first"),
     ("SET autocommit = 1", False, "implicitly commits"),
-    ("SAVEPOINT sp_evil", False, "the harness owns savepoint naming"),
+    ("SAVEPOINT sp_evil", False, "routed to checkpoint(); the harness owns naming"),
     ("LOCK TABLES t WRITE", False, "implicitly commits"),
     ("USE otherdb", False, "switching schema mid-task"),
     ("", False, "empty input"),

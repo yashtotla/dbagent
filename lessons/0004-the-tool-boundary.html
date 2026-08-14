@@ -75,8 +75,21 @@ lesson.</p>
 
 <p>That should land personally. Two sessions ago you found the DDL guard yourself and stopped at
 DDL — when three of the four savepoint killers aren't DDL. An allowlist is the <em>structural</em>
-fix for exactly that failure mode: it doesn't ask you to think of everything. And the list you do
-need is short, because all 40 gold labels are <code>INSERT</code> (20) or <code>UPDATE</code> (20).</p>
+fix for exactly that failure mode: it doesn't ask you to think of everything.</p>
+
+<div class="callout warn">
+  <span class="label">Correction — DELETE</span>
+  <p>An earlier version of this lesson called <code>DELETE</code> a judgment call I'd made. Wrong,
+  and Yash caught it. <strong>DBBench has three modification types.</strong> AgentBench's
+  <code>task.py</code> branches on the literal tuple <code>("INSERT", "DELETE", "UPDATE")</code> in
+  two places — verified in source.</p>
+  <p>The dev split contains 20 <code>INSERT</code>, 20 <code>UPDATE</code> and <strong>zero
+  <code>DELETE</code></strong>. That is a property of <em>this split</em>, not of the benchmark, and
+  the two are not interchangeable — I let the split's contents stand in for the benchmark's category
+  definition. <code>DELETE</code> belongs in the allowlist on the same footing as the other two, and
+  a scope sentence in the write-up should say “the dev split contains no DELETE tasks” rather than
+  “DBBench modifications are INSERT and UPDATE.”</p>
+</div>
 
 <h2>The tool</h2>
 
@@ -115,6 +128,44 @@ see it:</p>
 <p>Note what a rejection <em>is</em>: a tool result the agent reads and can act on, plus a trace
 event. Not a crash, not a silent drop. The agent gets to try something else, and you get a record
 that it reached for DDL — which is a finding about agent behaviour, not a harness failure.</p>
+
+<h2>“But the agent still needs to checkpoint”</h2>
+
+<p>It does — and the guard rejects <code>SAVEPOINT</code>, <code>ROLLBACK</code> and
+<code>COMMIT</code>. That is not withholding the capability. It is <strong>routing it through a
+typed interface instead of an opaque string</strong> — the same bash-versus-dedicated-tool
+distinction from the top of this lesson, applied one level in.</p>
+
+<div class="table-wrap">
+<table>
+  <thead><tr><th>Tool</th><th>Mode A</th><th>Mode B</th><th>What the harness actually issues</th></tr></thead>
+  <tbody>
+    <tr><td><code>execute_sql(sql)</code></td><td>✓</td><td>✓</td><td>guard, then execute</td></tr>
+    <tr><td><code>checkpoint()</code></td><td>—</td><td>✓</td><td><code>SAVEPOINT sp_&lt;depth&gt;</code>, returns the handle</td></tr>
+    <tr><td><code>restore(handle)</code></td><td>—</td><td>✓</td><td><code>ROLLBACK TO SAVEPOINT sp_&lt;handle&gt;</code></td></tr>
+    <tr><td><code>commit_final_answer()</code></td><td>✓</td><td>✓</td><td><code>COMMIT</code>, end the task</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p>Three things the harness can only do if it owns the statement:</p>
+
+<ul>
+  <li><strong>Savepoint naming.</strong> Reusing a name <em>replaces</em> the old savepoint rather
+      than nesting (<a href="../reference/mysql-transaction-boundaries.html">Reference 01</a>). An
+      agent writing <code>SAVEPOINT sp1</code> twice silently loses its outer branch. Depth-indexed
+      names — <code>sp_0</code>, <code>sp_1</code>, … — have to be assigned by the harness.</li>
+  <li><strong>Countable branches.</strong> Lesson 03 established that overhead scales with
+      <em>branches per turn</em>. A <code>checkpoint()</code> call is one structured trace event;
+      <code>execute_sql("SAVEPOINT sp1")</code> is a string you'd have to parse SQL out of.</li>
+  <li><strong>Handle validation.</strong> <code>restore(3)</code> can be refused when depth 3 no
+      longer exists, instead of surfacing as error 1305 mid-branch.</li>
+</ul>
+
+<p>The two verbs the agent genuinely never needs: <strong>bare <code>COMMIT</code></strong>
+happens once, through <code>commit_final_answer</code>; <strong>bare <code>ROLLBACK</code></strong>
+would discard the entire task, and “reset to the start” is <code>restore(0)</code> against an
+<code>sp_0</code> the harness takes immediately after <code>START TRANSACTION</code>.</p>
 
 <h2>Run it</h2>
 
@@ -222,11 +273,13 @@ the trigger condition belongs in the tool's own description, not only in your sy
 
   <div class="ask">
     <span class="label">Ask your teacher</span>
-    <p>The contestable claim here is the allowlist's <em>contents</em>. I included
-    <code>DELETE</code> so a branch can correct itself, and the read verbs so the agent can inspect
-    state mid-branch — both are judgment calls I made, not results. If you think a modification
-    agent has no business issuing <code>DELETE</code>, argue it. Every verb you allow is a claim
-    about what exploration requires.</p>
+    <p>The genuinely contestable claim left in this lesson is <code>restore(handle)</code> taking a
+    handle at all. A flat <code>restore()</code> that always returns to the most recent checkpoint
+    is simpler and matches how the agent probably thinks; an addressable handle allows jumping back
+    several branches at once, which is a real tree search but also a much larger action space to
+    reason about. I picked the handle because it makes branch structure legible in the trace — that
+    is a measurement convenience, not evidence about what helps the agent. Argue it before you
+    build it.</p>
   </div>
 </div>
 
