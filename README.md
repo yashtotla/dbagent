@@ -53,7 +53,12 @@ Models live in `MODEL_REGISTRY`; adding one is a registry entry, not a code chan
 | alias | model | endpoint |
 |---|---|---|
 | `qwen2.5-7b` | `qwen2.5:7b` | local Ollama |
-| `qwen3.6-27b` | `qwen/qwen3.6-27b` | Groq |
+| `qwen3.6-27b-groq` | `qwen/qwen3.6-27b` | Groq |
+| `qwen3.6-27b-ali` | `qwen3.6-27b` | Alibaba Cloud Model Studio |
+
+The provider is part of the alias because it changes behaviour, not just latency —
+on Groq this model emits XML instead of JSON tool calls often enough to need
+resampling, and on Alibaba it does not.
 
 Runs are serial by design — savepoints are session-scoped. Two runs at once are safe
 (`TASK_DB` is per-process) but each still needs its own MySQL connection.
