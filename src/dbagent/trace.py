@@ -26,9 +26,10 @@ class Trace:
         self.n += 1
         record = {"type": "step", "n": self.n, "event": event, **fields}
         if response is not None:
-            record["stop_reason"] = response.stop_reason
+            choice = response.choices[0]
+            record["finish_reason"] = choice.finish_reason
             record["usage"] = response.usage.model_dump()
-            record["content"] = [block.model_dump() for block in response.content]
+            record["message"] = choice.message.model_dump()
         self._write(record)
 
     def result(self, passed: bool, hash_got: str, hash_want: str) -> None:
@@ -62,7 +63,7 @@ def summarize(records: list[dict]) -> dict:
         "max_depth": max(depths, default=0),
         "llm_ms": round(sum(s.get("llm_ms") or 0 for s in steps)),
         "db_ms": round(sum(s.get("db_ms") or 0 for s in steps), 2),
-        "out_tokens": sum(u.get("output_tokens", 0) for u in usage),
+        "out_tokens": sum(u.get("completion_tokens", 0) for u in usage),
     }
 
 
