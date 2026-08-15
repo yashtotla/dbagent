@@ -1,9 +1,10 @@
 """The agent loop: one task, one mode, three possible outcomes."""
 
+import json
 import time
 
 from . import guard
-from .config import EFFORT, MAX_STEPS, MAX_TOKENS, MODEL
+from .config import MAX_STEPS, MAX_TOKENS, MODEL
 from .session import Session
 
 SYSTEM = """You are operating on a single MySQL table to complete one task.
@@ -21,38 +22,29 @@ since the most recent checkpoint. Restoring is cheap — prefer trying an approa
 and undoing it over reasoning about which approach is correct.
 """
 
-NO_ARGS = {"type": "object", "properties": {}, "required": [], "additionalProperties": False}
+NO_ARGS = {"type": "object", "properties": {}, "required": []}
+
+
+def _tool(name: str, description: str, parameters: dict = NO_ARGS) -> dict:
+    """Wrap a tool definition in the OpenAI function-calling shape."""
+    return {"type": "function",
+            "function": {"name": name, "description": description, "parameters": parameters}}
+
 
 TOOLS = {
-    "execute_sql": {
-        "name": "execute_sql",
-        "description": "Run one SQL statement against the table and return its result.",
-        "strict": True,
-        "input_schema": {
-            "type": "object",
-            "properties": {"sql": {"type": "string", "description": "A single SQL statement."}},
-            "required": ["sql"],
-            "additionalProperties": False,
-        },
-    },
-    "commit_final_answer": {
-        "name": "commit_final_answer",
-        "description": "Call when the table is in its final state and the task is complete.",
-        "strict": True,
-        "input_schema": NO_ARGS,
-    },
-    "checkpoint": {
-        "name": "checkpoint",
-        "description": "Record the current table state so you can return to it later.",
-        "strict": True,
-        "input_schema": NO_ARGS,
-    },
-    "restore": {
-        "name": "restore",
-        "description": "Undo everything since the most recent checkpoint.",
-        "strict": True,
-        "input_schema": NO_ARGS,
-    },
+    "execute_sql": _tool(
+        "execute_sql",
+        "Run one SQL statement against the table and return its result.",
+        {"type": "object",
+         "properties": {"sql": {"type": "string", "description": "A single SQL statement."}},
+         "required": ["sql"]}),
+    "commit_final_answer": _tool(
+        "commit_final_answer",
+        "Call when the table is in its final state and the task is complete."),
+    "checkpoint": _tool(
+        "checkpoint", "Record the current table state so you can return to it later."),
+    "restore": _tool(
+        "restore", "Undo everything since the most recent checkpoint."),
 }
 
 
@@ -70,11 +62,13 @@ def system_for(mode: str) -> str:
 
 
 def dispatch(session, trace, call, response, llm_ms: float) -> tuple[str, bool]:
-    """Execute one tool call, record it, and return (result for the agent, done)."""
+    """Execute one tool call, record it, and return (result for the model, done)."""
     started = time.perf_counter()
+    name = call.function.name
+    args = json.loads(call.function.arguments or "{}")
 
-    if call.name == "execute_sql":
-        sql = call.input["sql"]
+    if name == "execute_sql":
+        sql = args["sql"]
         if not guard.is_allowed(sql):
             reason = f"rejected: only {', '.join(sorted(guard.ALLOWED))} are permitted"
             trace.step("rejected", response, depth=session.depth, sql=sql, reason=reason,
@@ -87,53 +81,51 @@ def dispatch(session, trace, call, response, llm_ms: float) -> tuple[str, bool]:
                    db_ms=(time.perf_counter() - started) * 1000)
         return f"{session.cur.rowcount} row(s) affected. {rows[:20]}", False
 
-    if call.name in ("checkpoint", "restore"):
-        getattr(session, call.name)()
-        trace.step(call.name, response, depth=session.depth, llm_ms=llm_ms,
+    if name in ("checkpoint", "restore"):
+        getattr(session, name)()
+        trace.step(name, response, depth=session.depth, llm_ms=llm_ms,
                    db_ms=(time.perf_counter() - started) * 1000)
-        return f"{call.name} done", False
+        return f"{name} done", False
 
-    if call.name == "commit_final_answer":
+    if name == "commit_final_answer":
         trace.step("commit_final_answer", response, depth=session.depth, llm_ms=llm_ms)
         return "committed", True
 
-    raise RuntimeError(f"model called an unknown tool: {call.name!r}")
+    raise RuntimeError(f"model called an unknown tool: {name!r}")
 
 
 def run_task(client, cur, task: dict, mode: str, trace) -> None:
     """Run one task to completion, or raise so the run stops and can be debugged."""
     session = Session(cur, mode)
-    messages = [{"role": "user",
-                 "content": f"{task['description']}\n\n{task['add_description']}"}]
+    messages = [
+        {"role": "system", "content": system_for(mode)},
+        {"role": "user", "content": f"{task['description']}\n\n{task['add_description']}"},
+    ]
 
     for step in range(1, MAX_STEPS + 1):
         started = time.perf_counter()
-        response = client.messages.create(
+        response = client.chat.completions.create(
             model=MODEL,
             max_tokens=MAX_TOKENS,
-            system=system_for(mode),
-            tools=tools_for(mode),
-            tool_choice={"type": "auto", "disable_parallel_tool_use": True},
-            thinking={"type": "adaptive"},
-            output_config={"effort": EFFORT},
             messages=messages,
+            tools=tools_for(mode),
+            tool_choice="auto",
         )
         llm_ms = (time.perf_counter() - started) * 1000
+        choice = response.choices[0]
 
-        if response.stop_reason != "tool_use":
+        if choice.finish_reason != "tool_calls":
             trace.step("halt", response, depth=session.depth, llm_ms=llm_ms)
-            raise RuntimeError(f"step {step}: stop_reason={response.stop_reason!r}")
+            raise RuntimeError(f"step {step}: finish_reason={choice.finish_reason!r}")
 
-        calls = [b for b in response.content if b.type == "tool_use"]
+        calls = choice.message.tool_calls
         if len(calls) != 1:
             raise RuntimeError(f"step {step}: {len(calls)} tool calls, expected 1")
 
         result, done = dispatch(session, trace, calls[0], response, llm_ms)
         messages += [
-            {"role": "assistant", "content": response.content},
-            {"role": "user", "content": [{"type": "tool_result",
-                                          "tool_use_id": calls[0].id,
-                                          "content": result}]},
+            choice.message,
+            {"role": "tool", "tool_call_id": calls[0].id, "content": result},
         ]
         if done:
             session.commit()
