@@ -7,19 +7,22 @@ from . import guard
 from .config import MAX_STEPS, MAX_TOKENS, MODEL
 from .session import Session
 
-SYSTEM = """You are operating on a single MySQL table to complete one task.
+SYSTEM = """You are completing one task against a single MySQL table.
 
-Use execute_sql to inspect the table and to make modifications. Only SELECT,
-INSERT, UPDATE and DELETE are permitted; anything else is rejected by the
-harness, so do not attempt it. When the table is in its final state, call
-commit_final_answer.
+The task gives you the table name and its column names. Identifiers may contain
+spaces and punctuation, so wrap every one of them in backticks.
+
+Call execute_sql to run one statement. SELECT, INSERT, UPDATE and DELETE are
+available.
+
+Call commit_final_answer once the table holds the final answer. Signal completion
+by making that tool call.
 """
 
 SYSTEM_B = """
-You may checkpoint before a risky modification and restore afterwards if the
-result is wrong. checkpoint records the current state; restore undoes everything
-since the most recent checkpoint. Restoring is cheap — prefer trying an approach
-and undoing it over reasoning about which approach is correct.
+Call checkpoint before a modification you are unsure about, and restore to undo
+everything since the most recent checkpoint. Restoring is cheap — prefer trying
+an approach and undoing it over reasoning about which approach is correct.
 """
 
 NO_ARGS = {"type": "object", "properties": {}, "required": []}
@@ -74,10 +77,18 @@ def dispatch(session, trace, call, response, llm_ms: float) -> tuple[str, bool]:
             trace.step("rejected", response, depth=session.depth, sql=sql, reason=reason,
                        llm_ms=llm_ms)
             return reason, False
-        session.cur.execute(sql)
-        rows = session.cur.fetchall() if session.cur.description else []
+        try:
+            session.cur.execute(sql)
+            rows = session.cur.fetchall() if session.cur.description else []
+        except Exception as e:
+            # Log before re-raising: a statement that fails is the one you most
+            # need to see, and the process is about to stop.
+            trace.step("execute_sql", response, depth=session.depth, sql=sql,
+                       rowcount=None, db_error=f"{type(e).__name__}: {e}",
+                       llm_ms=llm_ms, db_ms=(time.perf_counter() - started) * 1000)
+            raise
         trace.step("execute_sql", response, depth=session.depth, sql=sql,
-                   rowcount=session.cur.rowcount, llm_ms=llm_ms,
+                   rowcount=session.cur.rowcount, db_error=None, llm_ms=llm_ms,
                    db_ms=(time.perf_counter() - started) * 1000)
         return f"{session.cur.rowcount} row(s) affected. {rows[:20]}", False
 
@@ -112,6 +123,8 @@ def run_task(client, cur, task: dict, mode: str, trace) -> None:
             tool_choice="auto",
         )
         llm_ms = (time.perf_counter() - started) * 1000
+        if not response.choices:
+            raise RuntimeError(f"step {step}: provider returned no choices — {response}")
         choice = response.choices[0]
 
         if choice.finish_reason != "tool_calls":

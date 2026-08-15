@@ -1,6 +1,7 @@
 """Writing and reading per-task run traces."""
 
 import json
+import re
 from pathlib import Path
 
 RUNS = Path("runs")
@@ -10,8 +11,10 @@ class Trace:
     """Writes one task's run to runs/<task_id>.<mode>.jsonl."""
 
     def __init__(self, task_id: str, mode: str, **config):
-        RUNS.mkdir(exist_ok=True)
-        self.path = RUNS / f"{task_id}.{mode}.jsonl"
+        slug = re.sub(r"[^A-Za-z0-9._-]", "_", config.get("model", "unknown"))
+        directory = RUNS / slug
+        directory.mkdir(parents=True, exist_ok=True)
+        self.path = directory / f"{task_id}.{mode}.jsonl"
         self.file = self.path.open("w")
         self.n = 0
         self._write({"type": "run", "task_id": task_id, "mode": mode, **config})
