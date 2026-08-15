@@ -33,6 +33,3 @@ Thumbs.db
 # NOTE: runs/ is intentionally tracked — the traces are the experiment's evidence
 # and the write-up's named recovery cases are quoted from them. Same convention as
 # results/ in llm-serving-lab.
-
-runs/qwen2.5-7b/*
-runs/qwen3.6-27b-groq/*

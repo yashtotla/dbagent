@@ -1,0 +1,1 @@
+{"type": "run", "task_id": "task_27", "mode": "B", "model": "qwen3.6-27b", "endpoint": "https://api.groq.com/openai/v1", "max_steps": 30}

@@ -1,0 +1,2 @@
+{"type": "run", "task_id": "task_25", "mode": "A", "model": "qwen2.5-7b", "endpoint": "http://localhost:11434/v1", "max_steps": 30}
+{"type": "step", "n": 1, "event": "halt", "depth": 0, "llm_ms": 3935.9650000114925, "reason": "finish_reason='stop'", "finish_reason": "stop", "usage": {"completion_tokens": 74, "prompt_tokens": 357, "total_tokens": 431, "completion_tokens_details": null, "prompt_tokens_details": null}, "message": {"content": "", "refusal": null, "role": "assistant", "annotations": null, "audio": null, "function_call": null, "tool_calls": null}}
