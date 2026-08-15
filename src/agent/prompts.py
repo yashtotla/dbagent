@@ -8,6 +8,9 @@ spaces and punctuation, so wrap every one of them in backticks.
 Call execute_sql to run one statement. SELECT, INSERT, UPDATE and DELETE are
 available.
 
+The table already holds rows. They show how this table formats its values.
+SELECT some before you write, and format yours to match.
+
 Call commit_final_answer once the table holds the final answer. Signal completion
 by making that tool call.
 """
