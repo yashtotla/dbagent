@@ -33,11 +33,25 @@ def show(trace_path) -> None:
         print(line)
 
 
-def main(mode: str, model: str, limit: int = 3, offset: int = 0) -> int:
-    """Run `limit` tasks from `offset` in `mode`, printing each step."""
+def select(limit: int, offset: int, ids: list[str] | None) -> list[dict]:
+    """Return the tasks to run, by explicit id or by slice."""
+    tasks = load_modification_tasks()
+    if not ids:
+        return tasks[offset:offset + limit]
+    chosen = [t for t in tasks if t["task_id"] in set(ids)]
+    # A mistyped id would silently shrink the run, and a smaller denominator is
+    # the kind of wrong number that reads as a result.
+    missing = set(ids) - {t["task_id"] for t in chosen}
+    assert not missing, f"unknown task ids: {sorted(missing)}"
+    return chosen
+
+
+def main(mode: str, model: str, limit: int = 3, offset: int = 0,
+         tasks: list[str] | None = None) -> int:
+    """Run the selected tasks in `mode`, printing each step."""
     settings = resolve_model(model)
     client = OpenAI(api_key=settings["api_key"], base_url=settings["base_url"])
-    tasks = load_modification_tasks()[offset:offset + limit]
+    tasks = select(limit, offset, tasks)
     conn = connect()
     passed = 0
 
