@@ -16,10 +16,12 @@ def parse_args():
                         help="Model alias from the registry")
     parser.add_argument("--limit", type=int, default=3, help="Number of tasks to run")
     parser.add_argument("--offset", type=int, default=0, help="Index of the first task")
+    parser.add_argument("--tasks", nargs="+", metavar="ID",
+                        help="Explicit task ids, overriding --limit and --offset")
     return parser.parse_args()
 
 
 if __name__ == "__main__":
     args = parse_args()
     sys.exit(run_experiment(mode=args.mode, model=args.model,
-                            limit=args.limit, offset=args.offset))
+                            limit=args.limit, offset=args.offset, tasks=args.tasks))

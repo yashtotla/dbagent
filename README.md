@@ -46,6 +46,7 @@ uv run python -m src.main --mode B --model qwen2.5-7b --limit 40
 | `--model` | alias from `src/utils/constants.py` |
 | `--limit` | number of tasks (default 3) |
 | `--offset` | index of the first task (default 0; UPDATE tasks start at 20) |
+| `--tasks` | explicit ids (`--tasks task_24 task_26`), overriding the two above |
 
 Models live in `MODEL_REGISTRY`; adding one is a registry entry, not a code change.
 
