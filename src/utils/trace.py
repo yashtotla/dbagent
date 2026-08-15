@@ -64,6 +64,7 @@ def summarize(records: list[dict]) -> dict:
         "checkpoints": sum(s["event"] == "checkpoint" for s in steps),
         "restores": sum(s["event"] == "restore" for s in steps),
         "rejections": sum(s["event"] == "rejected" for s in steps),
+        "resamples": sum(s["event"] == "malformed_tool_call" for s in steps),
         "max_depth": max(depths, default=0),
         "llm_ms": round(sum(s.get("llm_ms") or 0 for s in steps)),
         "db_ms": round(sum(s.get("db_ms") or 0 for s in steps), 2),

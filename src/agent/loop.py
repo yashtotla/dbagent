@@ -6,7 +6,7 @@ import time
 from src.agent import guard
 from src.agent.prompts import system_for, tools_for
 from src.agent.session import Session
-from src.utils.config import MAX_STEPS, MAX_TOKENS
+from src.utils.config import MAX_RESAMPLES, MAX_STEPS, MAX_TOKENS
 
 
 def dispatch(session, trace, call, response, llm_ms: float | None) -> tuple[str, bool]:
@@ -50,6 +50,28 @@ def dispatch(session, trace, call, response, llm_ms: float | None) -> tuple[str,
     raise RuntimeError(f"model called an unknown tool: {name!r}")
 
 
+def complete(client, model: str, messages: list, mode: str, trace):
+    """Call the model, re-sampling when the provider rejects its own tool-call syntax."""
+    for _ in range(MAX_RESAMPLES):
+        try:
+            return client.chat.completions.create(
+                model=model,
+                max_tokens=MAX_TOKENS,
+                messages=messages,
+                tools=tools_for(mode),
+                tool_choice="auto",
+            )
+        except Exception as e:
+            # Groq validates the tool call it just generated and 400s when the model
+            # emits XML instead of JSON. Nothing reached the database, so re-sampling
+            # is a transport retry, not a second attempt at the task. Logged because
+            # how often a model can hold the protocol is itself a result.
+            if "tool_use_failed" not in str(e):
+                raise
+            trace.step("malformed_tool_call", reason=str(e)[:400])
+    raise RuntimeError(f"{MAX_RESAMPLES} consecutive malformed tool calls")
+
+
 def run_task(client, cur, task: dict, mode: str, trace, model: str) -> None:
     """Run one task to completion, or raise so the run stops and can be debugged."""
     session = Session(cur, mode)
@@ -60,22 +82,21 @@ def run_task(client, cur, task: dict, mode: str, trace, model: str) -> None:
 
     for step in range(1, MAX_STEPS + 1):
         started = time.perf_counter()
-        response = client.chat.completions.create(
-            model=model,
-            max_tokens=MAX_TOKENS,
-            messages=messages,
-            tools=tools_for(mode),
-            tool_choice="auto",
-        )
+        response = complete(client, model, messages, mode, trace)
         llm_ms = (time.perf_counter() - started) * 1000
         choice = response.choices[0]
         calls = choice.message.tool_calls or []
 
         if not calls:
-            trace.step("halt", response, depth=session.depth, llm_ms=llm_ms,
-                       reason=f"finish_reason={choice.finish_reason!r}")
-            raise RuntimeError(f"step {step}: no tool call, "
-                               f"finish_reason={choice.finish_reason!r}")
+            # Tokens spent but nothing returned means the provider parsed a tool call
+            # and threw it away: qwen escapes a SQL quote as \' , which is not a legal
+            # JSON escape, so Ollama's json.Unmarshal fails and it reports an empty
+            # response. Without this the trace blames the model for saying nothing.
+            dropped = not choice.message.content and response.usage.completion_tokens
+            reason = ("provider dropped a malformed tool call"
+                      if dropped else f"finish_reason={choice.finish_reason!r}")
+            trace.step("halt", response, depth=session.depth, llm_ms=llm_ms, reason=reason)
+            raise RuntimeError(f"step {step}: {reason}")
 
         # Qwen batches calls despite parallel_tool_calls, and Mode B batches more
         # because it offers more tools. Rejecting batches would penalise Mode B

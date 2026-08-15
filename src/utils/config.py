@@ -24,6 +24,7 @@ TASK_DB = f"dbagent_task_{os.getpid()}"
 # Held fixed across both modes and written into every trace header.
 MAX_TOKENS = 4096
 MAX_STEPS = 30
+MAX_RESAMPLES = 5
 
 
 def resolve_model(alias: str) -> dict:
