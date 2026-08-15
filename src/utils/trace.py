@@ -8,9 +8,10 @@ RUNS = Path("runs")
 
 
 class Trace:
-    """Writes one task's run to runs/<task_id>.<mode>.jsonl."""
+    """Writes one task's run to runs/<model>/<task_id>.<mode>.jsonl."""
 
     def __init__(self, task_id: str, mode: str, **config):
+        # Model goes in the path so switching models does not overwrite traces.
         slug = re.sub(r"[^A-Za-z0-9._-]", "_", config.get("model", "unknown"))
         directory = RUNS / slug
         directory.mkdir(parents=True, exist_ok=True)
@@ -25,18 +26,14 @@ class Trace:
         self.file.flush()
 
     def step(self, event: str, response=None, **fields) -> None:
-        """Record one agent turn."""
+        """Record one tool call. llm_ms is set only on the first call of a batch."""
         self.n += 1
         record = {"type": "step", "n": self.n, "event": event, **fields}
         if response is not None:
-            record["usage"] = response.usage.model_dump() if response.usage else None
-            if response.choices:
-                choice = response.choices[0]
-                record["finish_reason"] = choice.finish_reason
-                record["message"] = choice.message.model_dump()
-            else:
-                # Provider returned an error payload shaped like a completion.
-                record["raw_response"] = response.model_dump()
+            choice = response.choices[0]
+            record["finish_reason"] = choice.finish_reason
+            record["usage"] = response.usage.model_dump()
+            record["message"] = choice.message.model_dump()
         self._write(record)
 
     def result(self, passed: bool, hash_got: str, hash_want: str) -> None:

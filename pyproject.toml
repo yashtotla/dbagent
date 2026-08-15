@@ -1,7 +1,7 @@
 [project]
 name = "dbagent"
 version = "0.1.0"
-description = "Add your description here"
+description = "Database agent with checkpointed exploration on DBBench modification tasks"
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
@@ -9,7 +9,3 @@ dependencies = [
     "python-dotenv>=1.1.0",
     "pymysql>=1.2.0",
 ]
-
-[build-system]
-requires = ["uv_build>=0.12.3,<0.13.0"]
-build-backend = "uv_build"

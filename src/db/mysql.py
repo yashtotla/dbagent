@@ -2,17 +2,21 @@
 
 import pymysql
 
-from .config import DSN, TASK_DB
-from .tasks import columns, table_name
+from src.utils.config import DSN, TASK_DB
+from src.utils.tasks import columns, table_name
 
 
 def connect() -> pymysql.connections.Connection:
     """Open a MySQL connection."""
+    # Savepoints are session-scoped, so a reconnect mid-task silently destroys the
+    # branch. Never use a pool and never enable auto-reconnect.
     return pymysql.connect(**DSN)
 
 
 def build_table(cur, task: dict) -> tuple[str, list[str]]:
     """Recreate the task database, create the task's table, and insert its rows."""
+    # DDL causes an implicit commit, so this must complete BEFORE any
+    # START TRANSACTION or it destroys every savepoint in the session.
     name, cols = table_name(task), columns(task)
     rows = task["table"]["table_info"]["rows"]
 
