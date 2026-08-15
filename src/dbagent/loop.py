@@ -121,25 +121,48 @@ def run_task(client, cur, task: dict, mode: str, trace) -> None:
             messages=messages,
             tools=tools_for(mode),
             tool_choice="auto",
+            # checkpoint/restore mutate one transaction in sequence, so batched
+            # calls have no well-defined order. One call per turn.
+            parallel_tool_calls=False,
         )
         llm_ms = (time.perf_counter() - started) * 1000
-        if not response.choices:
-            raise RuntimeError(f"step {step}: provider returned no choices — {response}")
-        choice = response.choices[0]
 
+        # Every response gets a trace record before anything can raise, or the
+        # runs you most need to diagnose are the ones that log nothing.
+        if not response.choices:
+            trace.step("halt", response, depth=session.depth, llm_ms=llm_ms,
+                       reason="provider returned no choices")
+            raise RuntimeError(f"step {step}: provider returned no choices")
+
+        choice = response.choices[0]
         if choice.finish_reason != "tool_calls":
-            trace.step("halt", response, depth=session.depth, llm_ms=llm_ms)
+            trace.step("halt", response, depth=session.depth, llm_ms=llm_ms,
+                       reason=f"finish_reason={choice.finish_reason!r}")
             raise RuntimeError(f"step {step}: finish_reason={choice.finish_reason!r}")
 
-        calls = choice.message.tool_calls
-        if len(calls) != 1:
-            raise RuntimeError(f"step {step}: {len(calls)} tool calls, expected 1")
+        calls = choice.message.tool_calls or []
+        if not calls:
+            trace.step("halt", response, depth=session.depth, llm_ms=llm_ms,
+                       reason="no tool calls")
+            raise RuntimeError(f"step {step}: no tool calls")
 
-        result, done = dispatch(session, trace, calls[0], response, llm_ms)
-        messages += [
-            choice.message,
-            {"role": "tool", "tool_call_id": calls[0].id, "content": result},
-        ]
+        # Providers batch calls despite parallel_tool_calls=False, and Mode B
+        # batches more because it offers more tools. Rejecting batches would
+        # penalise Mode B for its tool count. The array is ordered, so run it in
+        # order. llm_ms lands on the first call; the rest cost no model time.
+        messages.append(choice.message)
+        done = False
+        for i, call in enumerate(calls):
+            try:
+                result, done = dispatch(session, trace, call, response,
+                                        llm_ms if i == 0 else None)
+            except Exception as e:
+                trace.step("halt", response, depth=session.depth, llm_ms=llm_ms,
+                           reason=f"dispatch failed: {type(e).__name__}: {e}")
+                raise
+            messages.append({"role": "tool", "tool_call_id": call.id, "content": result})
+            if done:
+                break
         if done:
             session.commit()
             return

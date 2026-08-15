@@ -51,8 +51,9 @@ def main(limit: int = 3, offset: int = 0, mode: str = "A",
             print(f"  {task['task_id']}  {clean(task['description'])[:76]}")
             try:
                 agent.run_task(client, cur, task, mode, trace)
-                ok = hash_table(cur, name, cols) == task["answer_md5"]
-                trace.result(passed=ok, hash_got="", hash_want="")
+                got = hash_table(cur, name, cols)
+                ok = got == task["answer_md5"]
+                trace.result(passed=ok, hash_got=got, hash_want=task["answer_md5"])
                 passed += ok
                 show(trace.path)
                 print(f"    => {'PASS' if ok else 'FAIL'}\n")

@@ -1,5 +1,7 @@
 """Configuration for the project."""
 
+import os
+
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -13,14 +15,16 @@ DSN = {
     "autocommit": True,
 }
 
-TASK_DB = "dbagent_task"
+# Per-process, because build_table starts with DROP DATABASE. A shared name lets
+# two concurrent runs destroy each other's table mid-task
+TASK_DB = f"dbagent_task_{os.getpid()}"
 
-# OpenRouter's OpenAI-compatible endpoint. Point BASE_URL at
-# http://localhost:11434/v1 to run the same code against a local Ollama model.
-BASE_URL = "https://openrouter.ai/api/v1"
-API_KEY_VAR = "OPEN_ROUTER_API_KEY"
+# Local Ollama, OpenAI-compatible. Point BASE_URL at a hosted provider's
+# /v1 endpoint and change MODEL to run the same code against it.
+BASE_URL = "http://localhost:11434/v1"
+API_KEY_VAR = "OLLAMA_API_KEY"
 
 # Held fixed across both modes and written into every trace header.
-MODEL = "nvidia/nemotron-nano-9b-v2:free"
+MODEL = "qwen2.5:7b"
 MAX_TOKENS = 4096
 MAX_STEPS = 30

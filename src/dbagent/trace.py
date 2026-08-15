@@ -29,10 +29,14 @@ class Trace:
         self.n += 1
         record = {"type": "step", "n": self.n, "event": event, **fields}
         if response is not None:
-            choice = response.choices[0]
-            record["finish_reason"] = choice.finish_reason
-            record["usage"] = response.usage.model_dump()
-            record["message"] = choice.message.model_dump()
+            record["usage"] = response.usage.model_dump() if response.usage else None
+            if response.choices:
+                choice = response.choices[0]
+                record["finish_reason"] = choice.finish_reason
+                record["message"] = choice.message.model_dump()
+            else:
+                # Provider returned an error payload shaped like a completion.
+                record["raw_response"] = response.model_dump()
         self._write(record)
 
     def result(self, passed: bool, hash_got: str, hash_want: str) -> None:
