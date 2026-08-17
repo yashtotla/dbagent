@@ -96,29 +96,58 @@ the agent then rebuilt all 16 rows by hand rather than calling `restore`.
 
 ### Restore cost
 
-Measured with `assets/bench_restore.py`, MySQL 8.4.11 in Docker on localhost, on
-`game_results` (44 rows, the largest of the 40 tables), warmed up, median of n, floor
-measured with `DO 1`.
+```bash
+uv run python -m src.restore_cost
+```
 
-| mechanism | n | p50 | net of floor | × savepoint |
+MySQL 8.4.11 in Docker on localhost, on `game_results` (44 rows, the largest of the 40
+tables), warmed up, median of n, floor measured with `DO 1`.
+
+| mechanism | n | p50 | net of floor | × rollback |
 |---|---|---|---|---|
-| `DO 1` — round-trip floor | 400 | 0.117 ms | — | — |
-| `SAVEPOINT` | 400 | 0.104 ms | below resolution | — |
-| `ROLLBACK TO SAVEPOINT`, 1 row dirty | 400 | 0.209 ms | 0.092 ms | 1× |
-| `ROLLBACK TO SAVEPOINT`, 44 rows dirty | 400 | 0.646 ms | 0.529 ms | 3× |
-| replay-prefix, k=0 | 40 | 6.37 ms | 6.25 ms | 30× |
-| replay-prefix, k=20 | 40 | 9.37 ms | 9.25 ms | 45× |
-| `mysqldump` + reload | 10 | 105 ms | 105 ms | 504× |
-| `docker commit` | 3 | 510 ms | 510 ms | 2440× |
+| `DO 1` — round-trip floor | 400 | 0.105 ms | — | — |
+| `SAVEPOINT` | 400 | 0.089 ms | below resolution | — |
+| `ROLLBACK TO SAVEPOINT`, 1 row dirty | 400 | 0.199 ms | 0.094 ms | 1× |
+| `ROLLBACK TO SAVEPOINT`, 44 rows dirty | 400 | 0.661 ms | 0.556 ms | 3× |
+| replay-prefix, k=0 | 40 | 7.42 ms | 7.32 ms | 37× |
+| replay-prefix, k=1 | 40 | 8.31 ms | 8.21 ms | 42× |
+| replay-prefix, k=5 | 40 | 8.70 ms | 8.59 ms | 44× |
+| replay-prefix, k=20 | 40 | 10.87 ms | 10.77 ms | 55× |
+| `mysqldump` + reload | 10 | 104.6 ms | 104.5 ms | 525× |
+| `docker commit` | 3 | 526.9 ms | 526.8 ms | 2648× |
 
-Rollback cost tracks rows dirtied, not table size — InnoDB unwinds the undo log.
-Replay-prefix fits `≈ 6.4 ms + 0.15 ms × k`; the fixed reset dominates until k ≈ 42, so
-at realistic path lengths it is effectively constant rather than linear in path length.
+Creating a savepoint is free at this resolution. Rollback cost tracks rows dirtied, not
+table size — InnoDB unwinds the undo log. Replay-prefix fits `≈ 7.4 ms + 0.17 ms × k`;
+the fixed reset dominates until k ≈ 43, so at realistic path lengths it is effectively
+constant rather than linear in path length, as it is usually described.
 
 These are not like-for-like: the mechanisms restore different amounts of state.
 `ROLLBACK TO SAVEPOINT` covers rows in one transaction and misses DDL, the filesystem
 and process memory; `docker commit` covers the container filesystem. The comparison is
-coverage against cost, not a speed ranking.
+coverage against cost, not a speed ranking — the generality of the expensive mechanisms
+is real, it is simply unused by these tasks.
+
+Independent check: Xu et al. report 0.416–6.915 s for Docker snapshotting. The figure
+here sits at the bottom of that range, on different hardware.
+
+Rules that produced these numbers, and the reason for each:
+
+- **The floor must match the shape of the treatment.** An earlier version used `SELECT 1`
+  and measured `SAVEPOINT` as *negative* net cost, which is impossible. `SELECT 1`
+  returns a result set; `SAVEPOINT` returns only an OK packet. `DO 1` is the right no-op.
+- **Time only the operation.** Creating the savepoint and dirtying the rows sit outside
+  the timed region, or they become the thing being measured.
+- **Warm up.** First calls pay for connection state and page cache.
+- **Report p50 and p95, never the mean.** p95 is over 2× p50 for the 1-row rollback; a
+  mean hides that.
+- **Do not out-claim the resolution.** Run-to-run drift is ~0.015 ms, so `SAVEPOINT`
+  creation is reported as below measurement resolution rather than as a number.
+- **Report small n as small n.** `docker commit` at n=3 places an order of magnitude; it
+  does not characterise a distribution.
+- **State the power state.** With macOS low power mode on, every figure here — including
+  the floor — is roughly 2× larger. Being on battery does not matter; low power mode
+  does. Absolute values are machine-dependent, the ratios between mechanisms are not,
+  and a floor that moves with the treatments is how you tell the two apart.
 
 ### Why the eight Alibaba Mode A failures failed
 
@@ -164,6 +193,7 @@ result. It does not retry on 429.
 src/
   main.py          argparse entry point
   experiment.py    runs N tasks in one mode, prints every step
+  restore_cost.py  measures every candidate restore mechanism against a floor
   agent/
     loop.py        the agent loop and tool dispatch
     session.py     transaction and savepoint stack
