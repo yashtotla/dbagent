@@ -69,7 +69,7 @@ All 40 modification tasks, one run per mode, scored by order-insensitive table h
 
 | configuration | Mode A | Mode B | tasks run | |
 |---|---|---|---|---|
-| `qwen2.5-7b` (Ollama) | 22/40 | 21/40 | 36/40 | 11 protocol failures |
+| `qwen2.5-7b` (Ollama) | 22/40 | 21/40 | 36/40 | 8 protocol failures, 3 SQL errors |
 | `qwen3.6-27b-groq` | 10/20 | 1/20 | 16/20 | pilot; quota-damaged, Mode B unusable |
 | `qwen3.6-27b-ali` | **32/40** | **31/40** | **40/40** | clean instrument, 0 protocol failures |
 
